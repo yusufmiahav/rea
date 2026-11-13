@@ -1,0 +1,9 @@
+{
+  "name": "photo-editor-experiment",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node serve.js",
+    "test": "node --test"
+  }
+}

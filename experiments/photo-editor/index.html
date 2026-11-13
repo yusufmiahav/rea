@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Photo Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <strong class="brand">Photo Editor</strong>
+      <button id="importButton" class="primary">Import photos</button>
+      <input id="fileInput" type="file" accept="image/*" multiple hidden />
+      <span id="status" class="status" role="status" aria-live="polite"></span>
+      <span class="spacer"></span>
+      <button id="exportCurrent" disabled>Export photo</button>
+      <button id="exportAll" disabled>Export all</button>
+    </header>
+
+    <main class="layout">
+      <aside id="filmstrip" class="filmstrip" aria-label="Photos"></aside>
+
+      <section id="stage" class="stage">
+        <div id="dropHint" class="drop-hint">
+          <p><strong>Drop photos here</strong> or use Import photos.</p>
+          <p>JPEG, PNG and WebP. Nothing leaves your computer.</p>
+        </div>
+        <canvas id="view" hidden></canvas>
+        <button id="beforeButton" class="before-button" hidden title="Hold to see the original (\)">
+          Hold for original
+        </button>
+      </section>
+
+      <aside class="panel">
+        <canvas id="histogram" class="histogram" width="256" height="80"></canvas>
+
+        <section class="card">
+          <h2>My style</h2>
+          <p id="styleSummary" class="muted"></p>
+          <div class="button-grid">
+            <button id="aiEdit" class="primary" disabled>AI edit photo</button>
+            <button id="aiEditAll" disabled>AI edit all</button>
+            <button id="teach" disabled>Teach from this edit</button>
+            <button id="teachPairs">Learn from before/after…</button>
+          </div>
+          <details>
+            <summary>Manage style</summary>
+            <div class="button-grid">
+              <button id="styleExport">Save style file</button>
+              <button id="styleImport">Load style file</button>
+              <button id="styleReset" class="danger">Forget style</button>
+            </div>
+            <input id="styleFile" type="file" accept="application/json,.json" hidden />
+          </details>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <h2>Edit</h2>
+            <span>
+              <button id="copySettings" disabled>Copy</button>
+              <button id="pasteSettings" disabled>Paste</button>
+              <button id="resetSettings" disabled>Reset</button>
+            </span>
+          </div>
+          <div id="sliders"></div>
+        </section>
+      </aside>
+    </main>
+
+    <dialog id="pairsDialog">
+      <form method="dialog">
+        <h2>Learn from before/after pairs</h2>
+        <p class="muted">
+          Choose the unedited photos and your finished versions. Files are matched by name
+          (extension ignored). Each pair teaches your style the edit that turns one into the other.
+        </p>
+        <label>Originals <input id="pairsBefore" type="file" accept="image/*" multiple /></label>
+        <label>Edited <input id="pairsAfter" type="file" accept="image/*" multiple /></label>
+        <p id="pairsResult" class="muted" role="status"></p>
+        <div class="dialog-actions">
+          <button value="cancel">Close</button>
+          <button id="pairsLearn" type="button" class="primary">Learn</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="src/app.js"></script>
+  </body>
+</html>
