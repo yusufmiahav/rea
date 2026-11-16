@@ -1,9 +1,35 @@
 {
   "name": "photo-editor-experiment",
+  "productName": "Photo Editor",
+  "version": "0.1.0",
+  "description": "Photo editor that learns your editing style",
+  "author": "Photo Editor",
   "private": true,
   "type": "module",
+  "main": "desktop/main.cjs",
   "scripts": {
     "start": "node serve.js",
-    "test": "node --test"
+    "test": "node --test",
+    "desktop": "electron .",
+    "build:win": "electron-builder --win portable --x64"
+  },
+  "build": {
+    "appId": "local.photo-editor",
+    "files": [
+      "index.html",
+      "styles.css",
+      "src/**",
+      "desktop/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "artifactName": "PhotoEditor-${version}.exe"
+    }
+  },
+  "devDependencies": {
+    "electron": "^45.3.3",
+    "electron-builder": "^26.18.0"
   }
 }

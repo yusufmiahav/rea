@@ -1,6 +1,6 @@
 # Photo editor experiment
 
-A browser photo editor that learns your editing style and applies it to new photos. It is separate from REA's runtime: nothing in `src/` depends on it, and it has no dependencies of its own.
+A browser photo editor that learns your editing style and applies it to new photos. It is separate from REA's runtime: nothing in `src/` depends on it, and the web app itself has no dependencies; Electron is used only to package the desktop build.
 
 Everything runs locally in the browser. Photos are never uploaded.
 
@@ -15,6 +15,15 @@ Then open the printed address. Run the engine tests with:
 ```bash
 npm test
 ```
+
+## Windows desktop build
+
+```bash
+npm install
+npm run build:win
+```
+
+This writes a portable `dist/PhotoEditor-<version>.exe` (no installer; it can be built from Linux, macOS or Windows). The build is unsigned, so Windows SmartScreen warns on first launch. `npm run desktop` opens the same shell without packaging.
 
 ## What it does
 
