@@ -6,7 +6,7 @@
   "author": "Photo Editor",
   "private": true,
   "type": "module",
-  "main": "desktop/main.cjs",
+  "main": "desktop/main.js",
   "scripts": {
     "start": "node serve.js",
     "test": "node --test",
