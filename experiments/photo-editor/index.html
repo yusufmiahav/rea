@@ -10,11 +10,12 @@
     <header class="topbar">
       <strong class="brand">Photo Editor</strong>
       <button id="importButton" class="primary">Import photos</button>
-      <input id="fileInput" type="file" accept="image/*" multiple hidden />
+      <input id="fileInput" type="file" accept="image/*,.xmp" multiple hidden />
       <span id="status" class="status" role="status" aria-live="polite"></span>
       <span class="spacer"></span>
       <button id="exportCurrent" disabled>Export photo</button>
       <button id="exportAll" disabled>Export all</button>
+      <button id="exportXmp" disabled title="Write Lightroom .xmp sidecars for all photos">Export for Lightroom</button>
     </header>
 
     <main class="layout">
@@ -23,7 +24,7 @@
       <section id="stage" class="stage">
         <div id="dropHint" class="drop-hint">
           <p><strong>Drop photos here</strong> or use Import photos.</p>
-          <p>JPEG, PNG and WebP. Nothing leaves your computer.</p>
+          <p>JPEG, PNG and WebP, plus Lightroom .xmp sidecars to learn from. Nothing leaves your computer.</p>
         </div>
         <canvas id="view" hidden></canvas>
         <button id="beforeButton" class="before-button" hidden title="Hold to see the original (\)">

@@ -15,6 +15,7 @@ import {
   predictParams,
   trainStyle,
 } from "./style.js";
+import { paramsToXmp, xmpToParams } from "./xmp.js";
 
 const PREVIEW_EDGE = 1600;
 const THUMB_EDGE = 160;
@@ -67,7 +68,9 @@ function parseSamples(value) {
       features.length !== FEATURE_NAMES.length ||
       !features.every((v) => typeof v === "number" && Number.isFinite(v))
     ) {
-      throw new Error(`Sample ${index + 1} does not match this version's photo description`);
+      throw new Error(
+        `Sample ${index + 1} does not match this version's photo description`,
+      );
     }
     return {
       id: String(sample.id ?? `imported-${index}`),
@@ -84,23 +87,35 @@ function loadSamples() {
   try {
     stored = localStorage.getItem(STORAGE_KEY);
   } catch {
-    return { samples: [], problem: "This browser is blocking storage, so your style will not be remembered." };
+    return {
+      samples: [],
+      problem:
+        "This browser is blocking storage, so your style will not be remembered.",
+    };
   }
   if (stored === null) return { samples: [] };
   try {
     return { samples: parseSamples(JSON.parse(stored).samples) };
   } catch (error) {
     // Leave the unreadable data in place; it is only replaced when the user teaches a new sample.
-    return { samples: [], problem: `Saved style could not be read (${error.message}).` };
+    return {
+      samples: [],
+      problem: `Saved style could not be read (${error.message}).`,
+    };
   }
 }
 
 function saveSamples() {
   state.model = trainStyle(state.samples);
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ version: 1, samples: state.samples }));
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ version: 1, samples: state.samples }),
+    );
   } catch {
-    setStatus("Style updated for this session, but the browser would not store it.");
+    setStatus(
+      "Style updated for this session, but the browser would not store it.",
+    );
   }
   renderStyleSummary();
 }
@@ -114,11 +129,15 @@ function upsertSample(sample) {
 // ---------- image helpers ----------
 
 async function decode(file, maxEdge, exactSize) {
-  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  const bitmap = await createImageBitmap(file, {
+    imageOrientation: "from-image",
+  });
   try {
     const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
-    const width = exactSize?.width ?? Math.max(1, Math.round(bitmap.width * scale));
-    const height = exactSize?.height ?? Math.max(1, Math.round(bitmap.height * scale));
+    const width =
+      exactSize?.width ?? Math.max(1, Math.round(bitmap.width * scale));
+    const height =
+      exactSize?.height ?? Math.max(1, Math.round(bitmap.height * scale));
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
@@ -132,7 +151,8 @@ async function decode(file, maxEdge, exactSize) {
 
 const photoId = (file) => `${file.name}:${file.size}:${file.lastModified}`;
 const baseName = (name) => name.replace(/\.[^.]+$/, "").toLowerCase();
-const currentPhoto = () => state.photos.find((p) => p.id === state.currentId) ?? null;
+const currentPhoto = () =>
+  state.photos.find((p) => p.id === state.currentId) ?? null;
 
 function setStatus(message) {
   el.status.textContent = message;
@@ -141,8 +161,11 @@ function setStatus(message) {
 // ---------- import ----------
 
 async function importFiles(fileList) {
-  const files = [...fileList];
-  if (files.length === 0) return;
+  const all = [...fileList];
+  const isSidecar = (file) => file.name.toLowerCase().endsWith(".xmp");
+  const sidecars = all.filter(isSidecar);
+  const files = all.filter((file) => !isSidecar(file));
+  if (all.length === 0) return;
   const failed = [];
   let added = 0;
   for (const [index, file] of files.entries()) {
@@ -169,12 +192,62 @@ async function importFiles(fileList) {
     }
   }
   const parts = [`${added} photo${added === 1 ? "" : "s"} imported`];
+  const sidecarNote = await applySidecars(sidecars);
+  if (sidecarNote) parts.push(sidecarNote);
   if (failed.length > 0) {
-    parts.push(`${failed.length} could not be opened (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}); raw camera files are not supported yet`);
+    parts.push(
+      `${failed.length} could not be opened (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}); raw camera files are not supported yet`,
+    );
   }
   setStatus(parts.join(". ") + ".");
-  if (!state.currentId && state.photos.length > 0) await selectPhoto(state.photos[0].id);
+  if (!state.currentId && state.photos.length > 0)
+    await selectPhoto(state.photos[0].id);
   updateControls();
+}
+
+// A Lightroom sidecar next to a photo carries the edit the photographer made
+// there: show that edit and learn from it.
+async function applySidecars(sidecars) {
+  if (sidecars.length === 0) return "";
+  let learned = 0;
+  let unusable = 0;
+  let unmatched = 0;
+  for (const sidecar of sidecars) {
+    const photo = state.photos.find(
+      (p) => baseName(p.name) === baseName(sidecar.name),
+    );
+    if (!photo) {
+      unmatched += 1;
+      continue;
+    }
+    const parsed = xmpToParams(await sidecar.text());
+    if (!parsed) {
+      unusable += 1;
+      continue;
+    }
+    setParams(photo, parsed.params, { aiEdited: false });
+    upsertSample({
+      id: photo.id,
+      name: photo.name,
+      source: "edit",
+      features: photo.features,
+      params: { ...photo.params },
+    });
+    learned += 1;
+  }
+  if (learned > 0) {
+    saveSamples();
+    for (const photo of state.photos) renderThumb(photo);
+  }
+  const notes = [
+    `Learned ${learned} Lightroom edit${learned === 1 ? "" : "s"} from sidecars`,
+  ];
+  if (unmatched > 0)
+    notes.push(
+      `${unmatched} sidecar${unmatched === 1 ? "" : "s"} had no photo with the same name`,
+    );
+  if (unusable > 0) notes.push(`${unusable} carried no develop settings`);
+  return notes.join("; ");
 }
 
 function addThumb(photo) {
@@ -212,7 +285,8 @@ async function selectPhoto(id) {
   const photo = state.photos.find((p) => p.id === id);
   if (!photo) return;
   state.currentId = id;
-  for (const p of state.photos) p.element.setAttribute("aria-current", String(p.id === id));
+  for (const p of state.photos)
+    p.element.setAttribute("aria-current", String(p.id === id));
   photo.element.scrollIntoView({ block: "nearest", inline: "nearest" });
   syncSliders();
   updateControls();
@@ -224,7 +298,11 @@ async function selectPhoto(id) {
     return;
   }
   if (state.currentId !== id) return; // user moved on while decoding
-  state.preview = { id, source, output: new ImageData(source.width, source.height) };
+  state.preview = {
+    id,
+    source,
+    output: new ImageData(source.width, source.height),
+  };
   el.view.width = source.width;
   el.view.height = source.height;
   el.view.hidden = false;
@@ -268,7 +346,10 @@ function drawHistogram(pixels) {
     context.beginPath();
     context.moveTo(0, height);
     for (let i = 0; i < 256; i += 1) {
-      context.lineTo((i / 255) * width, height - Math.min(1, bins[i] / peak) * height);
+      context.lineTo(
+        (i / 255) * width,
+        height - Math.min(1, bins[i] / peak) * height,
+      );
     }
     context.lineTo(width, height);
     context.fill();
@@ -304,7 +385,9 @@ function buildSliders() {
     row.append(label, input, output);
     el.sliders.append(row);
     sliderInputs.set(slider.key, { input, output, slider });
-    input.addEventListener("input", () => setParam(slider.key, Number(input.value)));
+    input.addEventListener("input", () =>
+      setParam(slider.key, Number(input.value)),
+    );
     label.addEventListener("dblclick", () => setParam(slider.key, 0));
   }
   syncSliders();
@@ -348,6 +431,7 @@ function updateControls() {
   const hasStyle = state.model !== null;
   $("exportCurrent").disabled = !photo;
   $("exportAll").disabled = !hasPhotos;
+  $("exportXmp").disabled = !hasPhotos;
   $("aiEdit").disabled = !photo || !hasStyle;
   $("aiEditAll").disabled = !hasPhotos || !hasStyle;
   $("teach").disabled = !photo || isNeutral(photo.params);
@@ -362,7 +446,8 @@ function renderStyleSummary() {
   const count = state.samples.length;
   let text;
   if (count === 0) {
-    text = "No style yet. Edit a photo and choose Teach from this edit, or learn from before/after pairs.";
+    text =
+      "No style yet. Edit a photo and choose Teach from this edit, or learn from before/after pairs.";
   } else if (count < MIN_SAMPLES_FOR_REGRESSION) {
     text = `${count} example${count === 1 ? "" : "s"}. AI edit applies your average edit until it has ${MIN_SAMPLES_FOR_REGRESSION}; after that it adapts to each photo.`;
   } else {
@@ -390,16 +475,23 @@ function teachFromCurrent() {
 function aiEdit(photos) {
   if (!state.model) return;
   for (const photo of photos) {
-    setParams(photo, predictParams(state.model, photo.features), { aiEdited: true });
+    setParams(photo, predictParams(state.model, photo.features), {
+      aiEdited: true,
+    });
   }
-  setStatus(`AI edit applied to ${photos.length} photo${photos.length === 1 ? "" : "s"}. Adjust any slider to refine.`);
+  setStatus(
+    `AI edit applied to ${photos.length} photo${photos.length === 1 ? "" : "s"}. Adjust any slider to refine.`,
+  );
 }
 
 async function learnFromPairs() {
   const beforeFiles = [...el.pairsBefore.files];
-  const afterByName = new Map([...el.pairsAfter.files].map((file) => [baseName(file.name), file]));
+  const afterByName = new Map(
+    [...el.pairsAfter.files].map((file) => [baseName(file.name), file]),
+  );
   if (beforeFiles.length === 0 || afterByName.size === 0) {
-    el.pairsResult.textContent = "Choose both the originals and the edited versions.";
+    el.pairsResult.textContent =
+      "Choose both the originals and the edited versions.";
     return;
   }
   let learned = 0;
@@ -436,9 +528,14 @@ async function learnFromPairs() {
   }
   if (learned > 0) saveSamples();
   const parts = [`Learned from ${learned} pair${learned === 1 ? "" : "s"}.`];
-  if (unmatched > 0) parts.push(`${unmatched} original${unmatched === 1 ? " has" : "s have"} no edited file with the same name.`);
+  if (unmatched > 0)
+    parts.push(
+      `${unmatched} original${unmatched === 1 ? " has" : "s have"} no edited file with the same name.`,
+    );
   if (rejected.length > 0) {
-    parts.push(`${rejected.length} skipped because the edit goes beyond these sliders or the files could not be read (${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? "…" : ""}).`);
+    parts.push(
+      `${rejected.length} skipped because the edit goes beyond these sliders or the files could not be read (${rejected.slice(0, 3).join(", ")}${rejected.length > 3 ? "…" : ""}).`,
+    );
   }
   el.pairsResult.textContent = parts.join(" ");
   for (const photo of state.photos) renderThumb(photo);
@@ -456,7 +553,9 @@ function download(blob, name) {
 // ---------- export ----------
 
 async function renderFullSize(photo) {
-  const bitmap = await createImageBitmap(photo.file, { imageOrientation: "from-image" });
+  const bitmap = await createImageBitmap(photo.file, {
+    imageOrientation: "from-image",
+  });
   const canvas = document.createElement("canvas");
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
@@ -466,14 +565,19 @@ async function renderFullSize(photo) {
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   applyEdit(image.data, image.data, photo.params);
   context.putImageData(image, 0, 0);
-  const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.92));
+  const blob = await new Promise((resolve) =>
+    canvas.toBlob(resolve, "image/jpeg", 0.92),
+  );
   if (!blob) throw new Error("The browser could not encode the image");
   return blob;
 }
 
-const exportName = (photo) => `${photo.name.replace(/\.[^.]+$/, "")}-edited.jpg`;
+const exportName = (photo, kind) =>
+  kind === "xmp"
+    ? `${photo.name.replace(/\.[^.]+$/, "")}.xmp`
+    : `${photo.name.replace(/\.[^.]+$/, "")}-edited.jpg`;
 
-async function exportPhotos(photos) {
+async function exportPhotos(photos, kind = "jpeg") {
   let directory = null;
   if (photos.length > 1 && "showDirectoryPicker" in window) {
     try {
@@ -487,16 +591,24 @@ async function exportPhotos(photos) {
   for (const [index, photo] of photos.entries()) {
     setStatus(`Exporting ${index + 1} of ${photos.length}…`);
     try {
-      const blob = await renderFullSize(photo);
+      const blob =
+        kind === "xmp"
+          ? new Blob([paramsToXmp(photo.params)], {
+              type: "application/rdf+xml",
+            })
+          : await renderFullSize(photo);
       if (directory) {
-        const handle = await directory.getFileHandle(exportName(photo), { create: true });
+        const handle = await directory.getFileHandle(exportName(photo, kind), {
+          create: true,
+        });
         const writable = await handle.createWritable();
         await writable.write(blob);
         await writable.close();
       } else {
-        download(blob, exportName(photo));
+        download(blob, exportName(photo, kind));
         // Browsers drop downloads fired in the same instant.
-        if (photos.length > 1) await new Promise((resolve) => setTimeout(resolve, 250));
+        if (photos.length > 1)
+          await new Promise((resolve) => setTimeout(resolve, 250));
       }
     } catch {
       failed.push(photo.name);
@@ -504,8 +616,12 @@ async function exportPhotos(photos) {
   }
   const done = photos.length - failed.length;
   setStatus(
-    `Exported ${done} photo${done === 1 ? "" : "s"} as JPEG.` +
-      (failed.length > 0 ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}.` : ""),
+    (kind === "xmp"
+      ? `Wrote ${done} Lightroom sidecar${done === 1 ? "" : "s"}. Put them beside the photos and use Read Metadata from File in Lightroom.`
+      : `Exported ${done} photo${done === 1 ? "" : "s"} as JPEG.`) +
+      (failed.length > 0
+        ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}.`
+        : ""),
   );
 }
 
@@ -528,7 +644,9 @@ function wire() {
     event.preventDefault();
     el.stage.classList.add("dragging");
   });
-  el.stage.addEventListener("dragleave", () => el.stage.classList.remove("dragging"));
+  el.stage.addEventListener("dragleave", () =>
+    el.stage.classList.remove("dragging"),
+  );
   el.stage.addEventListener("drop", (event) => {
     event.preventDefault();
     el.stage.classList.remove("dragging");
@@ -542,11 +660,16 @@ function wire() {
 
   document.addEventListener("keydown", (event) => {
     if (el.pairsDialog.open) return;
-    const typing = event.target instanceof HTMLInputElement && event.target.type !== "range";
+    const typing =
+      event.target instanceof HTMLInputElement && event.target.type !== "range";
     if (typing) return;
     if (event.key === "\\") setShowBefore(true);
     const onSlider = event.target instanceof HTMLInputElement;
-    if (!onSlider && (event.key === "ArrowLeft" || event.key === "ArrowRight") && state.currentId) {
+    if (
+      !onSlider &&
+      (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+      state.currentId
+    ) {
       const index = state.photos.findIndex((p) => p.id === state.currentId);
       const next = state.photos[index + (event.key === "ArrowRight" ? 1 : -1)];
       if (next) selectPhoto(next.id);
@@ -573,7 +696,11 @@ function wire() {
   });
 
   $("styleExport").addEventListener("click", () => {
-    const json = JSON.stringify({ version: 1, samples: state.samples }, null, 2);
+    const json = JSON.stringify(
+      { version: 1, samples: state.samples },
+      null,
+      2,
+    );
     download(new Blob([json], { type: "application/json" }), "my-style.json");
   });
   $("styleImport").addEventListener("click", () => el.styleFile.click());
@@ -586,7 +713,9 @@ function wire() {
       for (const sample of samples) upsertSample(sample);
       saveSamples();
       for (const photo of state.photos) renderThumb(photo);
-      setStatus(`Loaded ${samples.length} example${samples.length === 1 ? "" : "s"} from ${file.name}.`);
+      setStatus(
+        `Loaded ${samples.length} example${samples.length === 1 ? "" : "s"} from ${file.name}.`,
+      );
     } catch (error) {
       setStatus(`${file.name} is not a usable style file: ${error.message}.`);
     }
@@ -594,7 +723,12 @@ function wire() {
   $("styleReset").addEventListener("click", () => {
     const count = state.samples.length;
     if (count === 0) return;
-    if (!confirm(`Forget all ${count} learned example${count === 1 ? "" : "s"}? Save a style file first if you want a backup.`)) return;
+    if (
+      !confirm(
+        `Forget all ${count} learned example${count === 1 ? "" : "s"}? Save a style file first if you want a backup.`,
+      )
+    )
+      return;
     state.samples = [];
     saveSamples();
     for (const photo of state.photos) renderThumb(photo);
@@ -613,8 +747,13 @@ function wire() {
     setParams(currentPhoto(), neutralParams(), { aiEdited: false });
   });
 
-  $("exportCurrent").addEventListener("click", () => exportPhotos([currentPhoto()]));
+  $("exportCurrent").addEventListener("click", () =>
+    exportPhotos([currentPhoto()]),
+  );
   $("exportAll").addEventListener("click", () => exportPhotos(state.photos));
+  $("exportXmp").addEventListener("click", () =>
+    exportPhotos(state.photos, "xmp"),
+  );
 }
 
 buildSliders();

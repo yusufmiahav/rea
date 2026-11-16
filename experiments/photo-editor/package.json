@@ -1,7 +1,7 @@
 {
   "name": "photo-editor-experiment",
   "productName": "Photo Editor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Photo editor that learns your editing style",
   "author": "Photo Editor",
   "private": true,
