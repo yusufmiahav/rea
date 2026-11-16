@@ -2,16 +2,79 @@
 // byte buffers so the same code runs in the browser, in a worker and in Node.
 
 export const SLIDERS = [
-  { key: "exposure", label: "Exposure", min: -4, max: 4, step: 0.05, group: "Light" },
-  { key: "contrast", label: "Contrast", min: -100, max: 100, step: 1, group: "Light" },
-  { key: "highlights", label: "Highlights", min: -100, max: 100, step: 1, group: "Light" },
-  { key: "shadows", label: "Shadows", min: -100, max: 100, step: 1, group: "Light" },
-  { key: "whites", label: "Whites", min: -100, max: 100, step: 1, group: "Light" },
-  { key: "blacks", label: "Blacks", min: -100, max: 100, step: 1, group: "Light" },
-  { key: "temperature", label: "Temperature", min: -100, max: 100, step: 1, group: "Color" },
+  {
+    key: "exposure",
+    label: "Exposure",
+    min: -4,
+    max: 4,
+    step: 0.05,
+    group: "Light",
+  },
+  {
+    key: "contrast",
+    label: "Contrast",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Light",
+  },
+  {
+    key: "highlights",
+    label: "Highlights",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Light",
+  },
+  {
+    key: "shadows",
+    label: "Shadows",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Light",
+  },
+  {
+    key: "whites",
+    label: "Whites",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Light",
+  },
+  {
+    key: "blacks",
+    label: "Blacks",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Light",
+  },
+  {
+    key: "temperature",
+    label: "Temperature",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Color",
+  },
   { key: "tint", label: "Tint", min: -100, max: 100, step: 1, group: "Color" },
-  { key: "vibrance", label: "Vibrance", min: -100, max: 100, step: 1, group: "Color" },
-  { key: "saturation", label: "Saturation", min: -100, max: 100, step: 1, group: "Color" },
+  {
+    key: "vibrance",
+    label: "Vibrance",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Color",
+  },
+  {
+    key: "saturation",
+    label: "Saturation",
+    min: -100,
+    max: 100,
+    step: 1,
+    group: "Color",
+  },
 ];
 
 export const SLIDER_KEYS = SLIDERS.map((slider) => slider.key);
@@ -45,7 +108,8 @@ for (let i = 0; i < 256; i += 1) {
 const LINEAR_TO_SRGB = new Float32Array(LINEAR_SIZE + 1);
 for (let i = 0; i <= LINEAR_SIZE; i += 1) {
   const v = i / LINEAR_SIZE;
-  LINEAR_TO_SRGB[i] = v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
+  LINEAR_TO_SRGB[i] =
+    v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055;
 }
 
 function smoothstep(edge0, edge1, x) {
@@ -73,7 +137,11 @@ function buildToneCurve(params) {
     if (contrast > 0) {
       // S-curve around mid grey that keeps black and white pinned.
       const x = v - 0.5;
-      v = 0.5 + Math.sign(x) * 0.5 * (1 - (1 - Math.abs(x) * 2) ** (1 + contrast * 1.5));
+      v =
+        0.5 +
+        Math.sign(x) *
+          0.5 *
+          (1 - (1 - Math.abs(x) * 2) ** (1 + contrast * 1.5));
     } else if (contrast < 0) {
       v = 0.5 + (v - 0.5) * (1 + contrast * 0.6);
     }
@@ -120,9 +188,18 @@ export function applyEdit(src, dst, params) {
     let r = SRGB_TO_LINEAR[src[i]] * gr;
     let g = SRGB_TO_LINEAR[src[i + 1]] * gg;
     let b = SRGB_TO_LINEAR[src[i + 2]] * gb;
-    r = tone[(LINEAR_TO_SRGB[r > LINEAR_SIZE ? LINEAR_SIZE : r | 0] * TONE_SIZE) | 0];
-    g = tone[(LINEAR_TO_SRGB[g > LINEAR_SIZE ? LINEAR_SIZE : g | 0] * TONE_SIZE) | 0];
-    b = tone[(LINEAR_TO_SRGB[b > LINEAR_SIZE ? LINEAR_SIZE : b | 0] * TONE_SIZE) | 0];
+    r =
+      tone[
+        (LINEAR_TO_SRGB[r > LINEAR_SIZE ? LINEAR_SIZE : r | 0] * TONE_SIZE) | 0
+      ];
+    g =
+      tone[
+        (LINEAR_TO_SRGB[g > LINEAR_SIZE ? LINEAR_SIZE : g | 0] * TONE_SIZE) | 0
+      ];
+    b =
+      tone[
+        (LINEAR_TO_SRGB[b > LINEAR_SIZE ? LINEAR_SIZE : b | 0] * TONE_SIZE) | 0
+      ];
     if (adjustColor) {
       const max = r > g ? (r > b ? r : b) : g > b ? g : b;
       const min = r < g ? (r < b ? r : b) : g < b ? g : b;

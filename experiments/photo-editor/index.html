@@ -15,7 +15,13 @@
       <span class="spacer"></span>
       <button id="exportCurrent" disabled>Export photo</button>
       <button id="exportAll" disabled>Export all</button>
-      <button id="exportXmp" disabled title="Write Lightroom .xmp sidecars for all photos">Export for Lightroom</button>
+      <button
+        id="exportXmp"
+        disabled
+        title="Write Lightroom .xmp sidecars for all photos"
+      >
+        Export for Lightroom
+      </button>
     </header>
 
     <main class="layout">
@@ -24,16 +30,29 @@
       <section id="stage" class="stage">
         <div id="dropHint" class="drop-hint">
           <p><strong>Drop photos here</strong> or use Import photos.</p>
-          <p>JPEG, PNG and WebP, plus Lightroom .xmp sidecars to learn from. Nothing leaves your computer.</p>
+          <p>
+            Raw camera files, JPEG, PNG and WebP, plus Lightroom .xmp sidecars
+            to learn from. Nothing leaves your computer.
+          </p>
         </div>
         <canvas id="view" hidden></canvas>
-        <button id="beforeButton" class="before-button" hidden title="Hold to see the original (\)">
+        <button
+          id="beforeButton"
+          class="before-button"
+          hidden
+          title="Hold to see the original (\)"
+        >
           Hold for original
         </button>
       </section>
 
       <aside class="panel">
-        <canvas id="histogram" class="histogram" width="256" height="80"></canvas>
+        <canvas
+          id="histogram"
+          class="histogram"
+          width="256"
+          height="80"
+        ></canvas>
 
         <section class="card">
           <h2>My style</h2>
@@ -51,7 +70,12 @@
               <button id="styleImport">Load style file</button>
               <button id="styleReset" class="danger">Forget style</button>
             </div>
-            <input id="styleFile" type="file" accept="application/json,.json" hidden />
+            <input
+              id="styleFile"
+              type="file"
+              accept="application/json,.json"
+              hidden
+            />
           </details>
         </section>
 
@@ -73,11 +97,17 @@
       <form method="dialog">
         <h2>Learn from before/after pairs</h2>
         <p class="muted">
-          Choose the unedited photos and your finished versions. Files are matched by name
-          (extension ignored). Each pair teaches your style the edit that turns one into the other.
+          Choose the unedited photos and your finished versions. Files are
+          matched by name (extension ignored). Each pair teaches your style the
+          edit that turns one into the other.
         </p>
-        <label>Originals <input id="pairsBefore" type="file" accept="image/*" multiple /></label>
-        <label>Edited <input id="pairsAfter" type="file" accept="image/*" multiple /></label>
+        <label
+          >Originals
+          <input id="pairsBefore" type="file" accept="image/*" multiple
+        /></label>
+        <label
+          >Edited <input id="pairsAfter" type="file" accept="image/*" multiple
+        /></label>
         <p id="pairsResult" class="muted" role="status"></p>
         <div class="dialog-actions">
           <button value="cancel">Close</button>

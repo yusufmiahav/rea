@@ -26,19 +26,28 @@ const signed = (value, digits) => {
 };
 
 /** Builds a sidecar that Lightroom reads through "Read Metadata from File". */
-export function paramsToXmp(params) {
+export function paramsToXmp(params, { raw = false } = {}) {
   const p = clampParams(params);
-  const attributes = SLIDER_KEYS.map(
-    (key) =>
-      `   crs:${CRS_NAMES[key]}="${signed(p[key], key === "exposure" ? 2 : 0)}"`,
-  ).join("\n");
+  // Raw files take white balance in Kelvin relative to the camera's as-shot
+  // value, which this editor cannot compute, so their white balance is left
+  // as shot instead of writing a value Lightroom would misread.
+  const keys = raw
+    ? SLIDER_KEYS.filter((key) => key !== "temperature" && key !== "tint")
+    : SLIDER_KEYS;
+  const whiteBalance = raw ? '   crs:WhiteBalance="As Shot"\n' : "";
+  const attributes = keys
+    .map(
+      (key) =>
+        `   crs:${CRS_NAMES[key]}="${signed(p[key], key === "exposure" ? 2 : 0)}"`,
+    )
+    .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">
  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
   <rdf:Description rdf:about=""
     xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/"
    crs:ProcessVersion="11.0"
-${attributes}
+${whiteBalance}${attributes}
    crs:HasSettings="True"/>
  </rdf:RDF>
 </x:xmpmeta>

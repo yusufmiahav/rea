@@ -5,7 +5,13 @@
 // ridge regression per slider over standardized image features. With too few
 // samples for a regression it falls back to the photographer's average edit.
 
-import { SLIDERS, SLIDER_KEYS, applyEdit, clampParams, neutralParams } from "./pipeline.js";
+import {
+  SLIDERS,
+  SLIDER_KEYS,
+  applyEdit,
+  clampParams,
+  neutralParams,
+} from "./pipeline.js";
 
 export const FEATURE_NAMES = [
   "meanLuma",
@@ -117,7 +123,8 @@ export function trainStyle(samples, { ridge = 1 } = {}) {
   const d = samples[0].features.length;
   const meanParams = neutralParams();
   for (const key of SLIDER_KEYS) {
-    meanParams[key] = samples.reduce((sum, s) => sum + (s.params[key] ?? 0), 0) / n;
+    meanParams[key] =
+      samples.reduce((sum, s) => sum + (s.params[key] ?? 0), 0) / n;
   }
   if (n < MIN_SAMPLES_FOR_REGRESSION) {
     return { kind: "average", sampleCount: n, meanParams };
@@ -125,12 +132,17 @@ export function trainStyle(samples, { ridge = 1 } = {}) {
 
   const featureMean = new Array(d).fill(0);
   const featureScale = new Array(d).fill(0);
-  for (const s of samples) for (let j = 0; j < d; j += 1) featureMean[j] += s.features[j] / n;
+  for (const s of samples)
+    for (let j = 0; j < d; j += 1) featureMean[j] += s.features[j] / n;
   for (const s of samples) {
-    for (let j = 0; j < d; j += 1) featureScale[j] += (s.features[j] - featureMean[j]) ** 2 / n;
+    for (let j = 0; j < d; j += 1)
+      featureScale[j] += (s.features[j] - featureMean[j]) ** 2 / n;
   }
-  for (let j = 0; j < d; j += 1) featureScale[j] = Math.sqrt(featureScale[j]) || 1;
-  const rows = samples.map((s) => s.features.map((v, j) => (v - featureMean[j]) / featureScale[j]));
+  for (let j = 0; j < d; j += 1)
+    featureScale[j] = Math.sqrt(featureScale[j]) || 1;
+  const rows = samples.map((s) =>
+    s.features.map((v, j) => (v - featureMean[j]) / featureScale[j]),
+  );
 
   const gram = Array.from({ length: d }, () => new Array(d).fill(0));
   for (const row of rows) {
@@ -152,7 +164,14 @@ export function trainStyle(samples, { ridge = 1 } = {}) {
     });
     weights[key] = solveLinearSystem(gram, rhs);
   }
-  return { kind: "regression", sampleCount: n, meanParams, featureMean, featureScale, weights };
+  return {
+    kind: "regression",
+    sampleCount: n,
+    meanParams,
+    featureMean,
+    featureScale,
+    weights,
+  };
 }
 
 /** Predicts slider settings for an unedited photo described by `features`. */
@@ -175,7 +194,8 @@ export function predictParams(model, features) {
 
 function roundParams(params) {
   const clamped = clampParams(params);
-  for (const { key, step } of SLIDERS) clamped[key] = Math.round(clamped[key] / step) * step;
+  for (const { key, step } of SLIDERS)
+    clamped[key] = Math.round(clamped[key] / step) * step;
   for (const key of SLIDER_KEYS) clamped[key] = Number(clamped[key].toFixed(2));
   return clamped;
 }
@@ -199,15 +219,19 @@ function meanSquaredError(a, b) {
  */
 export function fitParamsFromPair(before, after) {
   if (before.length !== after.length || before.length === 0) {
-    throw new Error("Before and after thumbnails must be the same non-zero size");
+    throw new Error(
+      "Before and after thumbnails must be the same non-zero size",
+    );
   }
   const scratch = new Uint8ClampedArray(before.length);
-  const error = (params) => meanSquaredError(applyEdit(before, scratch, params), after);
+  const error = (params) =>
+    meanSquaredError(applyEdit(before, scratch, params), after);
   // Several sliders can produce a similar result. A small cost on slider
   // travel makes the search prefer the simplest edit that explains the pair.
   const score = (params) => {
     let travel = 0;
-    for (const { key, min, max } of SLIDERS) travel += Math.abs(params[key]) / (max - min);
+    for (const { key, min, max } of SLIDERS)
+      travel += Math.abs(params[key]) / (max - min);
     return error(params) + 0.5 * travel;
   };
   let best = neutralParams();
@@ -234,7 +258,10 @@ export function fitParamsFromPair(before, after) {
       for (const { key, min, max } of SLIDERS) {
         const delta = (max - min) * fraction;
         for (const direction of [1, -1]) {
-          const value = Math.min(max, Math.max(min, best[key] + direction * delta));
+          const value = Math.min(
+            max,
+            Math.max(min, best[key] + direction * delta),
+          );
           if (value === best[key]) continue;
           const candidate = { ...best, [key]: value };
           const candidateScore = score(candidate);

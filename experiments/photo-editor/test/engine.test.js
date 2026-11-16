@@ -230,3 +230,152 @@ test("sidecar reading keeps only settings the file carries", async () => {
   assert.equal(xmpToParams('<rdf:Description xmp:Rating="3"/>'), null);
   assert.equal(xmpToParams('crs:Exposure2012="+9.00"').params.exposure, 4);
 });
+
+// Builds a structurally valid JPEG stream (no real image data) for scanner tests.
+function fakeJpeg({
+  width,
+  height,
+  sof = 0xc0,
+  orientation = null,
+  nested = null,
+}) {
+  const parts = [[0xff, 0xd8]];
+  const segment = (marker, body) =>
+    parts.push([
+      0xff,
+      marker,
+      (body.length + 2) >> 8,
+      (body.length + 2) & 255,
+      ...body,
+    ]);
+  if (orientation !== null || nested) {
+    const tiff = [
+      0x4d,
+      0x4d,
+      0,
+      42,
+      0,
+      0,
+      0,
+      8,
+      0,
+      1,
+      0x01,
+      0x12,
+      0,
+      3,
+      0,
+      0,
+      0,
+      1,
+      0,
+      orientation ?? 1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+    ];
+    segment(0xe1, [0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff, ...(nested ?? [])]);
+  }
+  segment(sof, [
+    8,
+    height >> 8,
+    height & 255,
+    width >> 8,
+    width & 255,
+    3,
+    1,
+    0x11,
+    0,
+    2,
+    0x11,
+    1,
+    3,
+    0x11,
+    1,
+  ]);
+  segment(0xda, [3, 1, 0, 2, 0x11, 3, 0x11, 0, 63, 0]);
+  parts.push([0x12, 0xff, 0x00, 0x34, 0xff, 0xd3, 0x56], [0xff, 0xd9]);
+  return parts.flat();
+}
+
+test("raw preview: picks the largest displayable embedded JPEG", async () => {
+  const { findEmbeddedJpegs, findRawPreview, isRawName } =
+    await import("../src/raw.js");
+  const thumb = fakeJpeg({ width: 160, height: 120 });
+  const sensor = fakeJpeg({ width: 6000, height: 4000, sof: 0xc3 }); // lossless raw data
+  const preview = fakeJpeg({
+    width: 3000,
+    height: 2000,
+    nested: fakeJpeg({ width: 320, height: 200 }),
+  });
+  // Big-endian TIFF header whose first directory says "rotate 90 CW" (6).
+  const header = [
+    0x4d, 0x4d, 0, 42, 0, 0, 0, 8, 0, 1, 0x01, 0x12, 0, 3, 0, 0, 0, 1, 0, 6, 0,
+    0, 0, 0, 0, 0,
+  ];
+  const noise = [0xff, 0xd8, 0xff, 0x00, 0x13, 0xff, 0xd8, 0x01];
+  const bytes = Uint8Array.from([
+    ...header,
+    ...thumb,
+    ...noise,
+    ...sensor,
+    ...preview,
+    1,
+    2,
+    3,
+  ]);
+
+  const sizes = findEmbeddedJpegs(bytes).map((j) => `${j.width}x${j.height}`);
+  assert.deepEqual(
+    sizes,
+    ["160x120", "3000x2000"],
+    "nested thumbnail and sensor data are not candidates",
+  );
+  const found = findRawPreview(bytes);
+  assert.equal(found.width, 3000);
+  assert.equal(found.end - found.start, preview.length);
+  assert.equal(
+    found.orientation,
+    1,
+    "preview with its own EXIF orientation needs no extra rotation",
+  );
+
+  const bare = Uint8Array.from([
+    ...header,
+    ...fakeJpeg({ width: 1600, height: 1200 }),
+  ]);
+  assert.equal(
+    findRawPreview(bare).orientation,
+    6,
+    "falls back to the raw file's orientation",
+  );
+  assert.equal(findRawPreview(Uint8Array.from([...header, ...sensor])), null);
+  assert.equal(
+    findRawPreview(
+      Uint8Array.from(fakeJpeg({ width: 3000, height: 2000 }).slice(0, -2)),
+    ),
+    null,
+    "truncated stream",
+  );
+  assert.ok(
+    isRawName("IMG_0001.CR3") && isRawName("a.nef") && !isRawName("a.jpg"),
+  );
+});
+
+test("raw sidecars leave white balance as shot and skip incremental values", async () => {
+  const { paramsToXmp, xmpToParams } = await import("../src/xmp.js");
+  const xmp = paramsToXmp(
+    { ...neutralParams(), exposure: 0.5, temperature: 20 },
+    { raw: true },
+  );
+  assert.match(xmp, /crs:WhiteBalance="As Shot"/);
+  assert.doesNotMatch(xmp, /Incremental/);
+  const parsed = xmpToParams(
+    '<x crs:Exposure2012="+0.50" crs:Temperature="5200" crs:Tint="+8"/>',
+  );
+  assert.deepEqual(parsed.found, ["exposure"]);
+  assert.equal(parsed.params.temperature, 0);
+});

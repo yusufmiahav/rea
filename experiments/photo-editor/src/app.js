@@ -15,6 +15,7 @@ import {
   predictParams,
   trainStyle,
 } from "./style.js";
+import { findRawPreview, isRawName, RAW_EXTENSIONS } from "./raw.js";
 import { paramsToXmp, xmpToParams } from "./xmp.js";
 
 const PREVIEW_EDGE = 1600;
@@ -128,25 +129,84 @@ function upsertSample(sample) {
 
 // ---------- image helpers ----------
 
-async function decode(file, maxEdge, exactSize) {
-  const bitmap = await createImageBitmap(file, {
+// What to draw for a file: the file itself, or for a raw file its embedded
+// preview plus the rotation the raw container asks for. Cached per file so a
+// large raw file is scanned once.
+const drawSources = new WeakMap();
+
+function drawSourceFor(file) {
+  let source = drawSources.get(file);
+  if (!source) {
+    source = (async () => {
+      if (!isRawName(file.name)) return { blob: file, orientation: 1 };
+      const preview = findRawPreview(new Uint8Array(await file.arrayBuffer()));
+      if (!preview) throw new Error("This raw file has no embedded preview");
+      return {
+        blob: file.slice(preview.start, preview.end, "image/jpeg"),
+        orientation: preview.orientation,
+      };
+    })();
+    drawSources.set(file, source);
+  }
+  return source;
+}
+
+// EXIF orientation 1-8 as a canvas transform for a w x h source image.
+function orientationTransform(orientation, w, h) {
+  switch (orientation) {
+    case 2:
+      return [-1, 0, 0, 1, w, 0];
+    case 3:
+      return [-1, 0, 0, -1, w, h];
+    case 4:
+      return [1, 0, 0, -1, 0, h];
+    case 5:
+      return [0, 1, 1, 0, 0, 0];
+    case 6:
+      return [0, 1, -1, 0, h, 0];
+    case 7:
+      return [0, -1, -1, 0, h, w];
+    case 8:
+      return [0, -1, 1, 0, 0, w];
+    default:
+      return [1, 0, 0, 1, 0, 0];
+  }
+}
+
+/** Draws a photo upright onto a new canvas, scaled so its long edge fits `maxEdge`. */
+async function drawFile(file, maxEdge, exactSize) {
+  const { blob, orientation } = await drawSourceFor(file);
+  const bitmap = await createImageBitmap(blob, {
     imageOrientation: "from-image",
   });
   try {
-    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
+    const turned = orientation >= 5;
+    const uprightWidth = turned ? bitmap.height : bitmap.width;
+    const uprightHeight = turned ? bitmap.width : bitmap.height;
+    const scale = Math.min(1, maxEdge / Math.max(uprightWidth, uprightHeight));
     const width =
-      exactSize?.width ?? Math.max(1, Math.round(bitmap.width * scale));
+      exactSize?.width ?? Math.max(1, Math.round(uprightWidth * scale));
     const height =
-      exactSize?.height ?? Math.max(1, Math.round(bitmap.height * scale));
+      exactSize?.height ?? Math.max(1, Math.round(uprightHeight * scale));
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    context.drawImage(bitmap, 0, 0, width, height);
-    return context.getImageData(0, 0, width, height);
+    context.scale(width / uprightWidth, height / uprightHeight);
+    context.transform(
+      ...orientationTransform(orientation, bitmap.width, bitmap.height),
+    );
+    context.drawImage(bitmap, 0, 0);
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    return { canvas, context };
   } finally {
     bitmap.close();
   }
+}
+
+async function decode(file, maxEdge, exactSize) {
+  const { canvas, context } = await drawFile(file, maxEdge, exactSize);
+  return context.getImageData(0, 0, canvas.width, canvas.height);
 }
 
 const photoId = (file) => `${file.name}:${file.size}:${file.lastModified}`;
@@ -178,6 +238,7 @@ async function importFiles(fileList) {
         id,
         file,
         name: file.name,
+        isRaw: isRawName(file.name),
         thumb,
         features: extractFeatures(thumb.data),
         params: neutralParams(),
@@ -196,7 +257,7 @@ async function importFiles(fileList) {
   if (sidecarNote) parts.push(sidecarNote);
   if (failed.length > 0) {
     parts.push(
-      `${failed.length} could not be opened (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}); raw camera files are not supported yet`,
+      `${failed.length} could not be opened (${failed.slice(0, 3).join(", ")}${failed.length > 3 ? "…" : ""}); raw files need an embedded preview`,
     );
   }
   setStatus(parts.join(". ") + ".");
@@ -553,15 +614,7 @@ function download(blob, name) {
 // ---------- export ----------
 
 async function renderFullSize(photo) {
-  const bitmap = await createImageBitmap(photo.file, {
-    imageOrientation: "from-image",
-  });
-  const canvas = document.createElement("canvas");
-  canvas.width = bitmap.width;
-  canvas.height = bitmap.height;
-  const context = canvas.getContext("2d", { willReadFrequently: true });
-  context.drawImage(bitmap, 0, 0);
-  bitmap.close();
+  const { canvas, context } = await drawFile(photo.file, Infinity);
   const image = context.getImageData(0, 0, canvas.width, canvas.height);
   applyEdit(image.data, image.data, photo.params);
   context.putImageData(image, 0, 0);
@@ -593,7 +646,7 @@ async function exportPhotos(photos, kind = "jpeg") {
     try {
       const blob =
         kind === "xmp"
-          ? new Blob([paramsToXmp(photo.params)], {
+          ? new Blob([paramsToXmp(photo.params, { raw: photo.isRaw })], {
               type: "application/rdf+xml",
             })
           : await renderFullSize(photo);
@@ -618,7 +671,10 @@ async function exportPhotos(photos, kind = "jpeg") {
   setStatus(
     (kind === "xmp"
       ? `Wrote ${done} Lightroom sidecar${done === 1 ? "" : "s"}. Put them beside the photos and use Read Metadata from File in Lightroom.`
-      : `Exported ${done} photo${done === 1 ? "" : "s"} as JPEG.`) +
+      : `Exported ${done} photo${done === 1 ? "" : "s"} as JPEG.` +
+        (photos.some((photo) => photo.isRaw)
+          ? " Raw files were exported from their embedded preview; use Export for Lightroom for full-quality results."
+          : "")) +
       (failed.length > 0
         ? ` ${failed.length} failed: ${failed.slice(0, 3).join(", ")}.`
         : ""),
@@ -756,6 +812,9 @@ function wire() {
   );
 }
 
+const rawAccept = RAW_EXTENSIONS.map((extension) => `.${extension}`).join(",");
+el.fileInput.accept = `image/*,.xmp,${rawAccept}`;
+el.pairsBefore.accept = `image/*,${rawAccept}`;
 buildSliders();
 wire();
 const loaded = loadSamples();
