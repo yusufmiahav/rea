@@ -26,7 +26,7 @@ import socket
 import threading
 import time
 
-from .notches import Notch, octaves_to_q
+from .notches import Notch, geq_curve, octaves_to_q
 
 
 class DryRun:
@@ -279,17 +279,43 @@ class QuGeqDesk(QuDesk):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
         self._validate()
+        self._cuts = {}    # centre fader -> Notch
+        self._faders = {}  # fader -> dB currently on the desk
+
+    def view(self, target):
+        v = super().view(target)
+        v._cuts, v._faders = {}, {}
+        return v
 
     def _validate(self):
         if not (0x60 <= self.ch <= 0x67):
             raise ValueError(f"the Qu GEQ is on mixes and LR only ({self.target}): use a target such as Mix1 or LR")
 
+    def _apply_curve(self, why):
+        want = geq_curve(self._cuts.values(), QU_GEQ_FREQS)
+        msgs, parts = [], []
+        for fader in sorted(set(want) | set(self._faders)):
+            g = want.get(fader, 0.0)
+            if self._faders.get(fader, 0.0) == g:
+                continue
+            msgs.append(self.nrpn(QU_GEQ_GAIN, self.scale.gain(g), fader - 1))
+            parts.append(f"{QU_GEQ_FREQS[fader - 1]:g}:{g:+.1f}")
+            if g:
+                self._faders[fader] = g
+            else:
+                self._faders.pop(fader, None)
+        if msgs:
+            msgs.append(self.nrpn(QU_GEQ_IN, 0x01, 0x00))
+            self._send(msgs, f"GEQ curve ({why}) " + " ".join(parts))
+
     def set_notch(self, n: Notch):
-        msgs = [self.nrpn(QU_GEQ_GAIN, self.scale.gain(n.gain_db), n.band - 1), self.nrpn(QU_GEQ_IN, 0x01, 0x00)]
-        self._send(msgs, f"GEQ {QU_GEQ_FREQS[n.band - 1]:g} Hz {n.gain_db:+.1f} dB")
+        """Shapes the cut over the faders around it as a smooth curve, not one fader."""
+        self._cuts[n.band] = n
+        self._apply_curve(f"{n.freq_hz:.0f} Hz {n.gain_db:+.1f} dB")
 
     def clear_notch(self, band):
-        self._send([self.nrpn(QU_GEQ_GAIN, self.scale.gain(0.0), band - 1)], f"GEQ {QU_GEQ_FREQS[band - 1]:g} Hz flat")
+        self._cuts.pop(band, None)
+        self._apply_curve(f"clear {QU_GEQ_FREQS[band - 1]:g} Hz")
 
 
 # ---------------------------------------------------------------------------

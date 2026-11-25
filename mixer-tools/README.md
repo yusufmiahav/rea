@@ -58,11 +58,21 @@ Every ~21 ms it takes an 8192-point FFT and checks each strong peak against all 
 
 When a peak passes every test, the notch manager acts on it:
 
-1. A new frequency gets a free EQ band, cut by −6 dB at 1/9 octave.
-2. If the same frequency (within 1/6 octave) rings again, that band goes 3 dB deeper and is
-   re-centred. A band changes at most once every 0.5 s.
-3. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7.
-4. When all the allowed bands are used, it reports `full` and changes nothing.
+1. A new frequency gets a free EQ band as a bell cut of −6 dB, 1/6 octave wide.
+2. Once a band has a frequency it stays there. If that frequency rings again, the bell goes 3 dB
+   deeper and 25% wider, up to one octave, so it becomes a smooth curve rather than a pin-prick.
+3. If a howl rings within 1/3 octave of an existing cut, that same bell is re-centred between the two
+   and widened to cover both. It doesn't take another band.
+4. When every band is in use, a howl within 2/3 octave of a cut widens that cut. Anything further
+   away is reported as `full`, and no band is moved.
+5. Rows on the same desk channel share one set of bands, so they can't fight over one.
+6. On the Qu GEQ, each cut is spread over the faders either side of it as a bell curve, and
+   overlapping cuts take the deeper value at each fader.
+7. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
+   changes at most once every 0.5 s.
+
+The app's **Analyser (RTA)** tab shows the live spectrum of a watched channel. Peaks that are starting to
+ring show in orange, feedback that was found shows in red, and the cuts on the desk show as a green curve.
 
 ## Commands
 

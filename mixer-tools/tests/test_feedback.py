@@ -67,17 +67,44 @@ class NotchTests(unittest.TestCase):
     def test_new_deepen_max_full(self):
         now = [0.0]
         m = NotchManager(NotchConfig(bands=[2, 3], cooldown_s=0.5), clock=lambda: now[0])
-        self.assertEqual(m.handle(1000.0)[0], "new")
+        act, n = m.handle(1000.0)
+        self.assertEqual((act, n.gain_db, round(n.width_oct, 3)), ("new", -6.0, 0.167))
         self.assertEqual(m.handle(1005.0)[0], "cooldown")
         now[0] = 1
         act, n = m.handle(1010.0)
         self.assertEqual((act, n.gain_db), ("deeper", -9.0))
-        self.assertTrue(1000 < n.freq_hz < 1010)
-        now[0] = 2; m.handle(1000.0)
-        now[0] = 3
+        self.assertGreater(n.width_oct, 1 / 6)          # repeat rings make a wider, smoother bell
+        self.assertEqual(n.freq_hz, 1000.0)              # and the band stays where it was
+        for t in range(2, 10):
+            now[0] = t; m.handle(1000.0)
+        self.assertEqual(m.handle(1000.0)[0], "cooldown")
+        now[0] = 20
         self.assertEqual(m.handle(1000.0)[0], "max")
         self.assertEqual(m.handle(3000.0)[0], "new")
-        self.assertEqual(m.handle(5000.0), ("full", None))
+        self.assertEqual(m.handle(8000.0), ("full", None))
+
+    def test_nearby_howl_widens_instead_of_moving_or_taking_a_band(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])
+        m.handle(1000.0)
+        now[0] = 1
+        act, n = m.handle(1150.0)   # 0.2 oct away
+        self.assertEqual((act, n.band), ("wider", 2))
+        self.assertAlmostEqual(n.freq_hz, (1000 * 1150) ** 0.5, places=3)
+        self.assertGreaterEqual(n.width_oct, 0.2 + 1 / 6 - 1e-9)
+        self.assertEqual(m.free_bands(), [3])
+
+    def test_bands_do_not_jump_when_full(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])
+        m.handle(500.0); m.handle(2000.0)
+        before = {b: n.freq_hz for b, n in m.notches.items()}
+        for i, f in enumerate((520, 480, 2100, 1900, 9000, 60)):
+            now[0] = i + 1
+            m.handle(float(f))
+        self.assertEqual(sorted(m.notches), [2, 3])
+        for b, f in before.items():  # each band's centre stays within 1/6 octave of where it started
+            self.assertLess(abs(__import__("math").log2(m.notches[b].freq_hz / f)), 1 / 6)
 
 
 class DeskEncodingTests(unittest.TestCase):
@@ -117,15 +144,31 @@ class DeskEncodingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             QuGeqDesk(None, "Ip1")
 
+    def test_geq_cut_is_a_curve_over_neighbours(self):
+        from feedback.desks import QU_GEQ_FREQS, QuGeqDesk
+        from feedback.notches import geq_curve
+        c = geq_curve([Notch(band=20, freq_hz=2500.0, gain_db=-12.0, width_oct=1 / 3)], QU_GEQ_FREQS)
+        self.assertEqual(c[20], -12.0)
+        self.assertTrue(-12 < c[19] < -3 and -12 < c[21] < -3, c)   # 2 k and 3.15 k come down part way
+        self.assertTrue(c[19] == c[21])
+        self.assertTrue(all(f in (18, 19, 20, 21, 22) for f in c), c)
+        # Clearing puts every fader it touched back to 0 dB.
+        out = []
+        d = QuGeqDesk(None, "Mix1", log=out.append)
+        d.set_notch(Notch(band=20, freq_hz=2500.0, gain_db=-12.0, width_oct=1 / 3))
+        d.clear_notch(20)
+        self.assertEqual(d._faders, {})
+        self.assertEqual(out[1].count("B0 62 70"), len(c))
+
     def test_geq_manager_picks_nearest_fader(self):
         from feedback.desks import QU_GEQ_FREQS
         from feedback.notches import GeqManager
         now = [0.0]
         m = GeqManager(QU_GEQ_FREQS, NotchConfig(), max_faders=2, clock=lambda: now[0])
         act, n = m.handle(2600.0)
-        self.assertEqual((act, n.band, n.freq_hz), ("new", 20, 2500))
+        self.assertEqual((act, n.band, n.freq_hz), ("new", 20, 2600))
         now[0] = 1
-        self.assertEqual(m.handle(2450.0)[0], "deeper")
+        self.assertIn(m.handle(2450.0)[0], ("deeper", "wider"))
         self.assertEqual(m.handle(108.9)[1].band, 6)  # 100 Hz fader
         self.assertEqual(m.handle(5000.0), ("full", None))
 
@@ -182,6 +225,32 @@ class ClosedLoopTests(unittest.TestCase):
             self.assertTrue(desk.log, f"{freq} Hz: no notch placed")
             excess = rms_db(mic[-2 * SR:]) - rms_db(src[-2 * SR:])
             self.assertLess(excess, 3.0, f"{freq} Hz still howling (+{excess:.1f} dB), notches {desk.log}")
+
+
+class RtaTests(unittest.TestCase):
+    def test_band_levels_find_a_tone(self):
+        from feedback import rta
+        d = FeedbackDetector()
+        t = np.arange(SR) / SR
+        d.process(0.5 * np.sin(2 * np.pi * 1000 * t))
+        c = rta.log_centres()
+        lv = rta.band_levels(d.last_pdb, d.bin_hz, c)
+        i = int(np.argmax(lv))
+        self.assertLess(abs(np.log2(c[i] / 1000)), 1 / 12)
+        self.assertAlmostEqual(lv[i], 20 * np.log10(0.5), delta=1.5)
+
+    def test_eq_response(self):
+        from feedback import rta
+        from feedback.desks import QU_GEQ_FREQS
+        n = Notch(band=2, freq_hz=1000.0, gain_db=-9.0, width_oct=1 / 3)
+        r = rta.eq_response_db([n], [100.0, 1000.0, 10000.0])
+        self.assertAlmostEqual(r[1], -9.0, delta=0.1)
+        self.assertGreater(r[0], -0.5)
+        g = rta.eq_response_db([Notch(band=16, freq_hz=1000.0, gain_db=-9.0, width_oct=1 / 3)], [1000.0, 1250.0, 100.0],
+                               geq_freqs=QU_GEQ_FREQS)
+        self.assertEqual(g[0], -9.0)
+        self.assertTrue(-9 < g[1] < 0)
+        self.assertEqual(g[2], 0.0)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,8 @@ class FeedbackDetector:
         self.pending = np.zeros(0)
         self.frame = 0
         self.tracks: list[_Track] = []
+        self.last_pdb = None   # newest spectrum in dBFS (for the analyser display)
+        self.last_seen = []    # peaks in the newest frame that look like feedback: [(freq_hz, dBFS)]
 
     # -- public -------------------------------------------------------------
     def reset(self):
@@ -141,6 +143,8 @@ class FeedbackDetector:
             delta = 0.5 * (a - g) / denom if denom != 0 else 0.0
             seen.append((k + delta, level, (papr, pnpr, phpr)))
 
+        self.last_pdb = pdb
+        self.last_seen = [(kf * self.bin_hz, lv) for kf, lv, _ in seen]
         return self._update_tracks(seen)
 
     def _phpr(self, pdb: np.ndarray, k: int) -> float:

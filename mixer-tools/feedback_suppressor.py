@@ -155,7 +155,7 @@ def main():
         p.add_argument("--bands", help="PEQ bands to use, 1-4 as on the desk, e.g. 2,3 (Qu: 1=LF 2=LM 3=HM 4=HF)")
         p.add_argument("--start-depth", type=float, default=-6.0)
         p.add_argument("--max-depth", type=float, default=None)
-        p.add_argument("--width", type=float, default=1 / 9, help="notch width in octaves")
+        p.add_argument("--width", type=float, default=1 / 6, help="starting cut width in octaves (repeat rings widen it)")
         p.add_argument("--papr", type=float, default=16.0, help="lower = more sensitive")
         p.add_argument("--persist", type=float, default=0.30, help="seconds a peak must hold")
         p.add_argument("--floor", type=float, default=-50.0, help="ignore peaks quieter than this (dBFS)")
@@ -172,7 +172,7 @@ def main():
     p.add_argument("--save", default="notches.json"); p.add_argument("--load")
     p = sub.add_parser("notch"); desk_args(p)
     p.add_argument("--band", type=int, required=True); p.add_argument("--freq", type=float, required=True)
-    p.add_argument("--gain", type=float, default=-6.0); p.add_argument("--width", type=float, default=1 / 9)
+    p.add_argument("--gain", type=float, default=-6.0); p.add_argument("--width", type=float, default=1 / 6)
     p = sub.add_parser("clear"); desk_args(p); p.add_argument("--bands", required=True)
 
     a = ap.parse_args()

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Windowed front end for the feedback suppressor (this is what the .exe runs)."""
 import json
+import math
 import os
 import queue
 import sys
@@ -16,7 +17,8 @@ import numpy as np
 
 from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, load_calibration
 from feedback.detector import DetectorConfig
-from feedback.notches import GeqManager, NotchConfig
+from feedback.notches import GeqManager, NotchConfig, NotchManager
+from feedback import rta
 from feedback.suppressor import Suppressor
 
 APP = "Mixer Tools"
@@ -159,6 +161,8 @@ class App:
         nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
         tab = ttk.Frame(nb, padding=8)
         nb.add(tab, text="  Feedback suppressor  ")
+        rtatab = ttk.Frame(nb, padding=8)
+        nb.add(rtatab, text="  Analyser (RTA)  ")
         rotab = ttk.Frame(nb, padding=8)
         nb.add(rotab, text="  Ring out  ")
         tools = ttk.Frame(nb, padding=8)
@@ -278,6 +282,7 @@ class App:
         self.log_txt.pack(fill="both", expand=True)
 
         self._build_ringout(rotab)
+        self._build_rta(rtatab)
 
         # ---- status bar
         sbar = ttk.Frame(root, padding=(16, 6))
@@ -331,6 +336,139 @@ class App:
         self.ro_status.pack(anchor="w")
         self.ringout = None
         self.ro_row = None
+
+    # ------------------------------------------------------------- analyser
+    RTA_LO, RTA_HI, RTA_TOP, RTA_BOT = 20.0, 20000.0, 0.0, -90.0
+    EQ_TOP, EQ_BOT = 6.0, -18.0
+
+    def _build_rta(self, tab):
+        T = self._tip
+        bar = ttk.Frame(tab)
+        bar.pack(fill="x", pady=(0, 8))
+        ttk.Label(bar, text="Show channel").pack(side="left")
+        self.rta_pick = tk.StringVar()
+        self.rta_box = T(ttk.Combobox(bar, textvariable=self.rta_pick, state="readonly", width=16),
+                         "Which watched channel to show. The list is the rows on the Feedback tab.")
+        self.rta_box.pack(side="left", padx=(8, 18))
+        self.rta_hold = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(bar, text="Peak hold", variable=self.rta_hold, style="Switch.TCheckbutton"),
+          "Keep a thin line at the highest level each frequency reached, falling back slowly.").pack(side="left")
+        self.rta_eq = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(bar, text="Show cuts", variable=self.rta_eq, style="Switch.TCheckbutton"),
+          "Draw the EQ the app has put on the desk for this channel (the green curve, scale on the right).").pack(side="left", padx=16)
+        self.rta_pause = tk.BooleanVar(value=False)
+        T(ttk.Checkbutton(bar, text="Pause", variable=self.rta_pause, style="Switch.TCheckbutton"),
+          "Freeze the picture so you can read it. Listening and cutting carry on as normal.").pack(side="left")
+        legend = ttk.Label(bar, style="Muted.TLabel",
+                           text="blue: level   orange: ringing   red: feedback found   green: cuts on the desk")
+        legend.pack(side="right")
+        self.rta = tk.Canvas(tab, background="#101418", highlightthickness=0)
+        self.rta.pack(fill="both", expand=True)
+        T(self.rta, "Live analyser of the channel's audio. Left to right is 20 Hz to 20 kHz.\n"
+                    "Orange dots are peaks that look like they're starting to ring.\n"
+                    "Red markers are feedback the app has found (they fade after 10 s).\n"
+                    "The green curve is the EQ cut on the desk; its scale is on the right.")
+        self.rta_centres = rta.log_centres()
+        self.rta_holdv = None
+        self.rta.bind("<Configure>", lambda e: self._draw_rta(force=True))
+        self.root.after(80, self._rta_tick)
+
+    def _rta_x(self, f, w):
+        return 50 + (w - 100) * math.log(f / self.RTA_LO) / math.log(self.RTA_HI / self.RTA_LO)
+
+    def _rta_y(self, db, h):
+        db = min(self.RTA_TOP, max(self.RTA_BOT, db))
+        return 12 + (h - 40) * (self.RTA_TOP - db) / (self.RTA_TOP - self.RTA_BOT)
+
+    def _eq_y(self, db, h):
+        db = min(self.EQ_TOP, max(self.EQ_BOT, db))
+        return 12 + (h - 40) * (self.EQ_TOP - db) / (self.EQ_TOP - self.EQ_BOT)
+
+    def _rta_row(self):
+        rows = [r for r in self.rows]
+        names = [f"in {r['chan']} -> {r['target']}" for r in rows]
+        if list(self.rta_box["values"]) != names:
+            self.rta_box["values"] = names
+        if names and self.rta_pick.get() not in names:
+            self.rta_pick.set(names[0])
+        if self.rta_pick.get() in names:
+            return rows[names.index(self.rta_pick.get())]
+        return None
+
+    def _rta_tick(self):
+        try:
+            if self.nb.index(self.nb.select()) == 1 and not self.rta_pause.get():
+                self._draw_rta()
+        except Exception as e:  # never let the display stop the app
+            self.log(f"[analyser] {type(e).__name__}: {e}")
+        self.root.after(80, self._rta_tick)
+
+    def _draw_rta(self, force=False):
+        cv = self.rta
+        w, h = cv.winfo_width(), cv.winfo_height()
+        if w < 200 or h < 120:
+            return
+        cv.delete("all")
+        grid, text = "#26303a", "#7d8a96"
+        for f in (31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000):
+            x = self._rta_x(f, w)
+            cv.create_line(x, 12, x, h - 28, fill=grid)
+            cv.create_text(x, h - 16, text=f"{f / 1000:g}k" if f >= 1000 else f"{f:g}", fill=text, font=("Segoe UI", 8))
+        for db in range(0, -91, -10):
+            y = self._rta_y(db, h)
+            cv.create_line(50, y, w - 50, y, fill=grid)
+            cv.create_text(28, y, text=f"{db}", fill=text, font=("Segoe UI", 8))
+        cv.create_text(28, h - 16, text="dBFS", fill=text, font=("Segoe UI", 8))
+        r = self._rta_row()
+        sup = r.get("sup") if r else None
+        det = sup.detector if sup else None
+        if det is None or det.last_pdb is None:
+            cv.create_text(w / 2, h / 2, fill=text, font=("Segoe UI", 12),
+                           text="Press Start on the Feedback tab to see the live spectrum here.")
+            return
+        c = self.rta_centres
+        lv = rta.band_levels(det.last_pdb, det.bin_hz, c)
+        xs = [self._rta_x(f, w) for f in c]
+        pts = [(xs[0], h - 28)] + [(x, self._rta_y(v, h)) for x, v in zip(xs, lv)] + [(xs[-1], h - 28)]
+        cv.create_polygon(*[p for xy in pts for p in xy], fill="#1d4f7a", outline="")
+        cv.create_line(*[p for xy in pts[1:-1] for p in xy], fill="#4aa3ff", width=2)
+        if self.rta_hold.get():
+            if self.rta_holdv is None or len(self.rta_holdv) != len(lv):
+                self.rta_holdv = lv.copy()
+            self.rta_holdv = np.maximum(lv, self.rta_holdv - 0.6)
+            cv.create_line(*[p for x, v in zip(xs, self.rta_holdv) for p in (x, self._rta_y(v, h))], fill="#c8d6e5")
+        # Peaks that are starting to ring.
+        for f, v in det.last_seen:
+            if self.RTA_LO <= f <= self.RTA_HI:
+                x, y = self._rta_x(f, w), self._rta_y(v, h)
+                cv.create_oval(x - 5, y - 5, x + 5, y + 5, fill="#ff9f1a", outline="")
+                cv.create_text(x, y - 14, text=f"{f:.0f}", fill="#ff9f1a", font=("Segoe UI", 8, "bold"))
+        # Feedback the app found, fading over 10 s.
+        now = time.monotonic()
+        for t, f, action in r.get("howls", []):
+            age = now - t
+            if age > 10 or not self.RTA_LO <= f <= self.RTA_HI:
+                continue
+            x = self._rta_x(f, w)
+            col = "#ff4d4d" if age < 3 else "#a33a3a"
+            cv.create_line(x, 12, x, h - 28, fill=col, dash=(4, 3), width=2 if age < 3 else 1)
+            cv.create_text(x + 4, 22, text=f"{f:.0f} Hz {action}", fill=col, anchor="w", font=("Segoe UI", 9, "bold"))
+        # The cuts on the desk, on the right-hand scale.
+        notches = list(sup.manager.notches.values())
+        if self.rta_eq.get():
+            for db in (0, -6, -12, -18):
+                cv.create_text(w - 26, self._eq_y(db, h), text=f"{db:+d}", fill="#3ddc84", font=("Segoe UI", 8))
+            y0 = self._eq_y(0, h)
+            cv.create_line(50, y0, w - 50, y0, fill="#1f5c3a", dash=(2, 4))
+            if notches:
+                fx = rta.log_centres(per_octave=48)
+                eq = rta.eq_response_db(notches, fx, QU_GEQ_FREQS if self.mode == "qu-geq" else None)
+                cv.create_line(*[p for f, g in zip(fx, eq) for p in (self._rta_x(f, w), self._eq_y(g, h))],
+                               fill="#3ddc84", width=3, smooth=True)
+                for n in notches:
+                    x = self._rta_x(min(self.RTA_HI, max(self.RTA_LO, n.freq_hz)), w)
+                    cv.create_text(x, self._eq_y(n.gain_db, h) + 14, fill="#3ddc84", font=("Segoe UI", 8),
+                                   text=f"{n.freq_hz:.0f} Hz {n.gain_db:+.0f} dB")
 
     # ------------------------------------------------------------- theme
     def toggle_theme(self):
@@ -413,7 +551,7 @@ class App:
                 out.append(f"{n.freq_hz:g}Hz {n.gain_db:+.0f}")
             else:
                 name = QU_BAND_NAMES.get(n.band, n.band) if self.mode == "qu" else f"B{n.band}"
-                out.append(f"{name} {n.freq_hz:.0f}Hz {n.gain_db:+.0f}")
+                out.append(f"{name} {n.freq_hz:.0f}Hz {n.gain_db:+.0f}dB {n.width_oct:.2f}oct")
         return ", ".join(out)
 
     def _show_notches(self):
@@ -505,10 +643,19 @@ class App:
             self.desk = self._make_desk(kind, apply, self.rows[0]["target"])
             self.log(f"Desk link OK: {self.desk.check_link()}")
             saved = self._read_saved_notches(kind)
+            views, managers = {}, {}
             for r in self.rows:
-                r["desk"] = self.desk.view(r["target"])
-                ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind])
-                manager = GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq" else None
+                # Rows that point at the same desk channel share one set of bands, so they
+                # can never fight over a band and make it jump between frequencies.
+                key = r["target"].lower()
+                if key not in views:
+                    views[key] = self.desk.view(r["target"])
+                    ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind])
+                    managers[key] = (GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq"
+                                     else NotchManager(ncfg))
+                r["desk"], manager = views[key], managers[key]
+                ncfg = manager.cfg
+                r["howls"] = []
                 r["sup"] = Suppressor(r["desk"], DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get(),
                                                                 floor_db=float(self.floor_var.get())),
                                       ncfg, log=lambda m, t=r["target"]: self.q.put(("log", f"{t}: {m}")),
@@ -562,6 +709,8 @@ class App:
         return data.get("targets") or None
 
     def _on_howl(self, row, action, ev):
+        row.setdefault("howls", []).append((time.monotonic(), ev.freq_hz, action))
+        del row["howls"][:-20]
         if self.ringout and self.ro_row is row:
             self.ringout.on_howl(action, ev.freq_hz)
 
@@ -936,7 +1085,7 @@ def smoke_drive(root):
     for k, v in (("start_db", -20), ("max_db", -15), ("step_s", 0.5)):
         app.ro_vars[k].set(v)
     root.after(500, app.toggle_ringout)
-    root.after(4500, lambda: app.nb.select(1))  # CI takes screenshots at ~3 s and ~5.5 s
+    root.after(3500, lambda: app.nb.select(1))  # CI screenshots: feedback tab, then the analyser
     root.after(7000, app.stop)
     return app
 
@@ -964,6 +1113,8 @@ def main():
                         if w not in text]
             if "error:" in text:
                 problems.append("an error was logged")
+            if "[analyser]" in text:
+                problems.append("the analyser failed")
             if getattr(sys, "frozen", False):
                 try:
                     import sv_ttk
