@@ -313,7 +313,7 @@ class App:
         self.status = ttk.Label(sbar, text="Stopped", style="Muted.TLabel")
         self.status.pack(side="left")
         ttk.Label(sbar, text="Hover over anything for help", style="Muted.TLabel").pack(side="right")
-        self._text_widgets = [self.log_txt, self.tool_out]
+        self._text_widgets = [self.log_txt, self.tool_out, self.rt_log]
         self._apply_text_colours()
 
     def _build_ringout(self, tab):
@@ -368,7 +368,7 @@ class App:
         c1, b1 = self._card(top, "1  Pick the channels",
                             "Ctrl-click or Shift-click to pick several. Press Read from desk to see how they're routed now.")
         c1.pack(side="left", fill="both", expand=True, padx=(0, 8))
-        self.rt_tree = ttk.Treeview(b1, columns=("ch", "lr", "sends"), show="headings", height=10, selectmode="extended")
+        self.rt_tree = ttk.Treeview(b1, columns=("ch", "lr", "sends"), show="headings", height=8, selectmode="extended")
         for col, text, w in (("ch", "Channel", 80), ("lr", "On L+R", 70), ("sends", "Sent to (from the desk)", 220)):
             self.rt_tree.heading(col, text=text)
             self.rt_tree.column(col, width=w, anchor="w")
@@ -401,6 +401,11 @@ class App:
         T(ttk.Checkbutton(b2, text="Take them off L+R", variable=self.rt_offlr, style="Switch.TCheckbutton"),
           "Unassigns the channels from L+R, so they only reach the PA through the mix and its return.").grid(
             row=2, column=1, sticky="w", pady=(8, 0))
+        self.rt_clear = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(b2, text="Take every other channel off this mix", variable=self.rt_clear,
+                          style="Switch.TCheckbutton"),
+          "Unassigns all the channels you didn't pick from this mix (including the return input),\n"
+          "so only your picked channels feed it.").grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         c3, b3 = self._card(right, "3  Bring the mix back",
                             "Patch the mix output to a socket and cable it into a spare input (or loop it through USB). "
@@ -437,6 +442,10 @@ class App:
         self.rt_status = ttk.Label(tab, style="Muted.TLabel", wraplength=900, justify="left",
                                    text="Uses the desk, IP and MIDI channel from the Feedback tab. Qu only.")
         self.rt_status.pack(anchor="w")
+        self.rt_log = tk.Text(tab, height=5, wrap="none", font=("Cascadia Mono", 9), state="disabled",
+                              relief="flat", borderwidth=0, padx=8, pady=4)
+        self.rt_log.pack(fill="both", expand=True, pady=(6, 0))
+        T(self.rt_log, "Every message sent to the desk for routing, byte by byte, so you can check it.")
 
     def _routing_desk(self):
         """Returns (desk, owned). Reuses the running connection (the Qu takes only one client)."""
@@ -448,15 +457,32 @@ class App:
             v = copy.copy(self.desk)          # same connection, but a plain Qu channel view
             v.__class__, v._owner = QuDesk, False
             v.parent = getattr(self.desk, "parent", None) or self.desk
+            v.log = self._routing_log
             return v, False
         apply = self.apply_var.get() and kind != "dry"
         if apply and not self.host_var.get().strip():
             raise ValueError("Enter the desk's IP address on the Feedback tab first.")
         d = QuDesk(self.host_var.get().strip(), "Ip1", midi_channel=self.midi_var.get(), apply=apply,
-                   log=lambda m: self.q.put(("log", m)))
+                   log=self._routing_log)
         if apply:
             d.check_link()
         return d, True
+
+    def _routing_log(self, m):
+        self.q.put(("log", m))
+        self.q.put(("call", lambda: self._rt_print(m)))
+
+    def _rt_print(self, m):
+        self.rt_log.configure(state="normal")
+        self.rt_log.insert("end", time.strftime("%H:%M:%S  ") + m + "\n")
+        self.rt_log.see("end")
+        self.rt_log.configure(state="disabled")
+
+    def _routing_inputs(self, desk):
+        """Input names on this desk: a Qu-16 has 16 mono inputs, the Qu-24 24, the Qu-32 32."""
+        box = str(getattr(getattr(desk, "parent", None) or desk, "box", "") or "")
+        n = 16 if "Qu-16" in box else 24 if "Qu-24" in box else 32
+        return qu_routing.input_names(n)
 
     def _routing_picked(self):
         picked = list(self.rt_tree.selection())
@@ -496,7 +522,11 @@ class App:
             from feedback.desks import qu_channel_code
             ch = qu_channel_code(name)
             lr = p.get(ch, qu_routing.ID_LR)
-            sends = [m for m, code in qu_routing.MIX_CODES.items() if p.get(ch, qu_routing.ID_ASSIGN, code)]
+            sends = []
+            for m, vx in qu_routing.MIX_VX.items():
+                if p.get(ch, qu_routing.ID_ASSIGN, vx):
+                    pre = p.get(ch, qu_routing.ID_PREPOST, vx)
+                    sends.append(m + (" (pre)" if pre else " (post)" if pre is not None else ""))
             if lr is not None:
                 n += 1
             self.rt_tree.item(name, values=(name, "?" if lr is None else ("yes" if lr else "no"), ", ".join(sends)))
@@ -518,8 +548,10 @@ class App:
                 return
             desk, owned = self._routing_desk()
             vx = getattr(self, "rt_lr_vx", 0x07)
+            others = [n for n in self._routing_inputs(desk) if n not in picked] if self.rt_clear.get() else []
+            self._rt_sent = []
             qu_routing.route_to_mix(desk, picked, mix, float(self.rt_send.get()), self.rt_post.get(),
-                                    self.rt_offlr.get(), lr_vx=vx)
+                                    self.rt_offlr.get(), lr_vx=vx, others=others)
             if self.rt_mixfader.get():
                 desk.view(mix if mix in ("Mix1", "Mix2", "Mix3", "Mix4") else hex(qu_routing.MIX_CODES[mix])).set_fader(0.0)
             if ret != "(none)":
@@ -529,7 +561,14 @@ class App:
             return
         for name in picked:
             vals = self.rt_tree.item(name, "values")
-            self.rt_tree.item(name, values=(name, "no" if self.rt_offlr.get() else vals[1], mix))
+            self.rt_tree.item(name, values=(name, "no" if self.rt_offlr.get() else vals[1],
+                                            f"{mix} ({'post' if self.rt_post.get() else 'pre'})"))
+        if self.rt_clear.get():
+            for name in self.rt_tree.get_children():
+                if name not in picked:
+                    vals = self.rt_tree.item(name, "values")
+                    self.rt_tree.item(name, values=(name, vals[1], ", ".join(
+                        x for x in str(vals[2]).split(", ") if x and not x.startswith(mix + " ") and x != mix)))
         self._routing_done(desk, owned, f"{'Sent' if desk.apply else 'Dry run: would send'} {', '.join(picked)} to {mix}"
                            + (f", back on {ret}" if ret != "(none)" else "") + ". Check the desk's routing screen.")
 

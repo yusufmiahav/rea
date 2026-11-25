@@ -180,7 +180,12 @@ goes on L+R. You can then EQ the mix (and point the feedback suppressor at it) w
 **Read from desk** asks the desk for its system state and shows each channel's L+R and mix assignment.
 **Put back on L+R** undoes it.
 
-The messages used are NRPN `55` (mix assign), `50` (pre/post), `20` (send level), `18` (L+R assign) and
-`17` (fader), with VX set to the mix's channel code (Mix1 = `60`). Pre/post `00` = post-fade and the L+R
-assign VX `07` are **assumed**. If **Read from desk** sees a different VX for L+R, the app uses that one.
-Check the routing screen on the desk the first time you use it.
+With **Take every other channel off this mix** on (the default), every channel you didn't pick is
+unassigned from that mix, the return input included, so only your picked channels feed it. Every message is
+shown byte by byte under the buttons.
+
+The messages come from the Qu MIDI Protocol V1.9+ Iss.2. They are NRPN `55` (mix assign), `50` (pre/post,
+`00` = post-fade) and `20` (send level). For these, VX is the send number: `00`–`03` = Mix1–4 and `04`–`06` =
+Mix5-6, 7-8 and 9-10. **This is not the mix's channel code. Builds before v8 sent `60`, which is why
+post-fade didn't change.** The other two are `18` (L+R assign, VX `07`) and `17` (fader, VX `07`). The Qu
+HPF frequency (`13`) uses the same 20 Hz–20 kHz scale as the PEQ.

@@ -154,7 +154,7 @@ class NotchTests(unittest.TestCase):
         import io, contextlib
         out = []
         QuDesk(None, "Ip1", log=out.append).set_notch(Notch(band=0, freq_hz=200.0, gain_db=0, width_oct=0))
-        self.assertIn("B0 62 13 B0 06 40 B0 26 07", out[0])   # HPF freq, 200 Hz = midpoint of 20-2k
+        self.assertIn("B0 62 13 B0 06 2A B0 26 07", out[0])   # HPF freq 200 Hz on the 20 Hz-20 kHz scale
         self.assertIn("B0 62 14 B0 06 01 B0 26 00", out[0])   # HPF in
         self.assertTrue(QuDesk(None, "Ip1").has_hpf)
         self.assertFalse(QuDesk(None, "Mix1").has_hpf)
@@ -344,20 +344,25 @@ class QuRoutingTests(unittest.TestCase):
         self.assertEqual(p.lr_vx(), 0x07)
 
     def test_route_to_mix_messages(self):
+        # Byte layouts from the Qu MIDI Protocol V1.9+ Iss.2: sends use VX 00-06 for Mix1..9-10.
         from feedback.qu_routing import restore_to_lr, route_to_mix, set_return
         out = []
         d = QuDesk(None, "Ip1", log=out.append)
-        n = route_to_mix(d, ["Ip3", "Ip4"], "Mix2", send_db=0.0)
-        self.assertEqual(n, 8)
-        self.assertIn("B0 63 22 B0 62 55 B0 06 01 B0 26 61", out[0])   # Ip3 assigned to Mix2
-        self.assertIn("B0 62 50 B0 06 00 B0 26 61", out[0])            # post-fade
-        self.assertIn("B0 62 20 B0 06 62 B0 26 61", out[0])            # send 0 dB
+        n = route_to_mix(d, ["Ip3", "Ip4"], "Mix2", send_db=0.0, others=["Ip5"])
+        self.assertEqual(n, 9)
+        self.assertIn("B0 63 22 B0 62 55 B0 06 01 B0 26 01", out[0])   # Ip3 assigned to Mix2 (VX 01)
+        self.assertIn("B0 62 50 B0 06 00 B0 26 01", out[0])            # post-fade on the Mix2 send
+        self.assertIn("B0 62 20 B0 06 62 B0 26 01", out[0])            # send level 0 dB
         self.assertIn("B0 62 18 B0 06 00 B0 26 07", out[0])            # off L+R
         self.assertIn("B0 63 23", out[1])                               # Ip4
+        self.assertIn("B0 63 24 B0 62 55 B0 06 00 B0 26 01", out[2])   # Ip5 taken off Mix2
         restore_to_lr(d, ["Ip3"], "Mix2")
-        self.assertIn("B0 62 18 B0 06 01 B0 26 07", out[2])
+        self.assertIn("B0 62 18 B0 06 01 B0 26 07", out[3])
         set_return(d, "Ip16")
-        self.assertIn("B0 63 2F B0 62 18 B0 06 01", out[3])
+        self.assertIn("B0 63 2F B0 62 18 B0 06 01", out[4])
+        out.clear()
+        route_to_mix(d, ["ST1"], "Mix5-6")
+        self.assertIn("B0 63 40 B0 62 55 B0 06 01 B0 26 04", out[0])
 
 
 class RtaTests(unittest.TestCase):

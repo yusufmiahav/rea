@@ -151,11 +151,11 @@ class QuScale:
         return round(127 * math.log(1.5 / octaves) / math.log(1.5 * 9))
 
     def hpf(self, hz: float) -> int:
-        """HPF frequency, ASSUMED log 20 Hz..2 kHz over 00..7F (check with qu16_probe sync)."""
+        """HPF frequency: 20 Hz..20 kHz over 00..7F per the V1.9 doc (same range as the PEQ
+        frequency; the curve in between is assumed log)."""
         if "hpf" in self.cal:
             return self._interp(self.cal["hpf"], hz, log_x=True)
-        hz = min(2000.0, max(20.0, hz))
-        return round(127 * math.log(hz / 20.0) / math.log(100.0))
+        return self.freq(hz)
 
     @staticmethod
     def gain(db: float) -> int:
