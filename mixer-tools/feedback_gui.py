@@ -1324,7 +1324,7 @@ def smoke_drive(root):
         app.rt_ret.set("Ip16")
         app.routing_apply()
     root.after(1000, try_routing)
-    root.after(3500, lambda: app.nb.select(1))  # CI screenshots: feedback tab, then the analyser
+    root.after(3500, lambda: app.nb.select(3))  # the Qu routing tab  # CI screenshots: feedback tab, then the analyser
     root.after(7000, app.stop)
     return app
 
