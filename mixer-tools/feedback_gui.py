@@ -341,6 +341,7 @@ class App:
         ttk.Label(f, text="Desk IP").grid(row=0, column=0, sticky="e", **pad)
         self.tool_host = tk.StringVar()
         ttk.Entry(f, textvariable=self.tool_host, width=18).grid(row=0, column=1, sticky="w", **pad)
+        self.tool_host.trace_add("write", lambda *_: self._fill_tool())
         ttk.Label(f, text="Tool").grid(row=1, column=0, sticky="e", **pad)
         self.tool_pick = tk.StringVar(value=self.TOOL_CMDS[0][0])
         box = ttk.Combobox(f, textvariable=self.tool_pick, values=[t[0] for t in self.TOOL_CMDS],
@@ -372,7 +373,7 @@ class App:
 
     def _fill_tool(self):
         tmpl = dict(self.TOOL_CMDS)[self.tool_pick.get()]
-        self.tool_cmd.set(tmpl.replace("{host}", self.tool_host.get().strip() or self.host_var.get().strip() or "<desk-ip>"))
+        self.tool_cmd.set(tmpl.replace("{host}", self.tool_host.get().strip() or (self.host_var.get().strip() if hasattr(self, "host_var") else "") or "<desk-ip>"))
 
     def _tool_print(self, text):
         self.tool_out.configure(state="normal")
@@ -516,10 +517,17 @@ def main():
     if "--selftest" in sys.argv:
         sys.exit(selftest())
     if "--smoke-gui" in sys.argv:  # build check: open the window, then close it
+        out = os.environ.get("SELFTEST_OUT", "smoke.txt")
         root = tk.Tk()
-        App(root)
+        try:
+            App(root)
+        except Exception:
+            import traceback
+            with open(out, "w") as f:
+                f.write(traceback.format_exc())
+            raise
         def done():
-            with open(os.environ.get("SELFTEST_OUT", "smoke.txt"), "w") as f:
+            with open(out, "w") as f:
                 f.write("OK")
             root.destroy()
         root.after(2500, done)

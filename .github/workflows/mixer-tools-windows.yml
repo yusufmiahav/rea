@@ -37,6 +37,10 @@ jobs:
           Get-Content selftest.txt
           dist\MixerTools-console.exe --tool feedback notch --desk qu --target Ip1 --band 2 --freq 2500
           dist\MixerTools-console.exe --tool dm7 get --help
+          $env:SELFTEST_OUT = "$PWD\smoke0.txt"
+          $p = Start-Process -FilePath dist\MixerTools-console.exe -ArgumentList "--smoke-gui" -PassThru -NoNewWindow
+          if (-not $p.WaitForExit(60000)) { $p.Kill(); Write-Host "console smoke timed out" }
+          if (Test-Path smoke0.txt) { Get-Content smoke0.txt }
       - name: Self-test (window build)
         timeout-minutes: 3
         shell: pwsh
