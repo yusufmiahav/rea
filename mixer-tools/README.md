@@ -13,6 +13,28 @@ console only when started from a console build, so in the window build use the t
 The exe is built by `.github/workflows/mixer-tools-windows.yml`. That workflow runs the unit tests,
 packages the app with PyInstaller and self-tests the result.
 
+## Several channels at once
+
+The feedback tab takes a list of channels to watch. Each row pairs one input channel on the audio
+device (for example Qu USB channel 3) with its own desk target and PEQ bands. Every row has its own
+detector and its own cuts, and all rows share one network connection to the desk (the Qu only allows
+one). The cuts are saved per target when you press Stop.
+
+## Ring-out mode
+
+Pick a watched row, set the limits, press Start, then **Start ring-out**. The app:
+
+1. sets that target's fader to **Start dB**, then raises it by **Step dB** every **Every s**,
+2. pulls the fader back by **Back off dB** whenever something rings. The suppressor cuts that
+   frequency, and the app waits a few seconds before it climbs again,
+3. finishes at **Max dB**, or when the EQ has no bands left. It then reports the highest level held
+   without howling and puts the fader back to the start level,
+4. drops the fader 10 dB and stops straight away if the input goes over **Stop above dBFS**.
+
+**STOP ring-out** (or Stop, or closing the window) puts the fader back to the start level at any
+time. Max is capped at +10 dB and the step at 3 dB. Start with the system turned down. The fader
+values on the Qu use the V1.9 doc's fader table, so check one move on the desk first.
+
 # Feedback suppressor
 
 This tool listens to a feed from the desk, finds frequencies that are starting to howl, and puts

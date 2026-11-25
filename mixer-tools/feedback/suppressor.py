@@ -11,8 +11,9 @@ from .notches import NotchConfig, NotchManager
 
 class Suppressor:
     def __init__(self, desk, detector_cfg: DetectorConfig | None = None,
-                 notch_cfg: NotchConfig | None = None, clock=time.monotonic, log=print, manager=None):
+                 notch_cfg: NotchConfig | None = None, clock=time.monotonic, log=print, manager=None, on_event=None):
         self.desk = desk
+        self.on_event = on_event  # called as on_event(action, FeedbackEvent) after each howl
         self.detector = FeedbackDetector(detector_cfg)
         self.manager = manager or NotchManager(notch_cfg, clock=clock)
         self.log = log
@@ -36,6 +37,8 @@ class Suppressor:
                 self.desk.set_notch(notch)
             if action != "full":
                 self.detector.forget(ev.freq_hz)
+            if self.on_event:
+                self.on_event(action, ev)
 
     def clear(self):
         for n in self.manager.clear():

@@ -186,3 +186,81 @@ class ClosedLoopTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MultiChannelAndRingOutTests(unittest.TestCase):
+    def test_views_share_one_qu_connection(self):
+        out = []
+        d = QuDesk(None, "Ip1", log=out.append)
+        v = d.view("Mix2")
+        self.assertIs(v.sock, d.sock)
+        v.set_notch(Notch(band=2, freq_hz=500.0, gain_db=-6.0, width_oct=1 / 9))
+        self.assertIn("Mix2 PEQ LM", out[-1])
+        self.assertIn("B0 63 61", out[-1])  # Mix2 channel code
+        d.status = 0xB4  # parent learns the desk's MIDI channel later
+        self.assertEqual(v.nrpn(0x17, 0)[0], 0xB4)
+        v.close()  # a view must not close the shared socket
+        self.assertFalse(d.stop.is_set())
+
+    def test_qu_fader_values(self):
+        from feedback.desks import qu_fader_value
+        self.assertEqual(qu_fader_value(0), 0x62)
+        self.assertEqual(qu_fader_value(10), 0x7F)
+        self.assertEqual(qu_fader_value(-10), 0x3F)
+        self.assertEqual(qu_fader_value(-200), 0)
+
+    def test_dm7_fader_line(self):
+        out = []
+        d = Dm7Desk(None, "Mix:3", log=out.append).view("InCh:5")
+        d.set_fader(-6.5)
+        self.assertEqual(out[-1], "[dm7 dry-run] set MIXER:Current/InCh/Fader/Level 5 0 -650")
+
+    def _ringout(self, cfg, loop_gain_db=1.0, seconds=20):
+        from feedback.ringout import RingOut
+        clock = [0.0]
+        desk = SimDesk(SR)
+        ro = RingOut(desk, cfg, clock=lambda: clock[0], log=lambda *_: None)
+        sup = Suppressor(desk, notch_cfg=NotchConfig(bands=[1, 2, 3, 4]), clock=lambda: clock[0],
+                         log=lambda *_: None, on_event=lambda a, e: ro.on_howl(a, e.freq_hz))
+
+        class Timed:
+            def process(self, b):
+                clock[0] += len(b) / SR
+                sup.process(b)
+
+        ro.start()
+        run_loop(synth.speechlike(seconds, level=0.05), SR, Timed(), desk, loop_gain_db=loop_gain_db,
+                 on_block=lambda m: ro.tick(20 * np.log10(np.abs(m).max() + 1e-9)))
+        return ro, desk
+
+    def test_ring_out_notches_and_reaches_max(self):
+        from feedback.ringout import RingOutConfig
+        ro, desk = self._ringout(RingOutConfig(start_db=-12, max_db=3, step_s=0.4, settle_s=1.0))
+        self.assertFalse(ro.running)
+        self.assertTrue(desk.log, "no notch placed")
+        self.assertIn("reached the max level", ro.result)
+        self.assertLessEqual(max(desk.fader_log), 3.0)  # never above the limit
+        self.assertEqual(desk.fader_db, -12)            # returned to the start level
+
+    def test_ring_out_level_guard(self):
+        from feedback.ringout import RingOut, RingOutConfig
+        desk = SimDesk(SR)
+        ro = RingOut(desk, RingOutConfig(start_db=-20, max_db=0, guard_dbfs=-3), clock=lambda: 0.0, log=lambda *_: None)
+        ro.start()
+        ro.tick(-1.0)
+        self.assertFalse(ro.running)
+        self.assertEqual(desk.fader_db, -30)  # pulled down 10 dB, not restored upward
+        self.assertIn("input reached", ro.result)
+
+    def test_ring_out_stop_restores(self):
+        from feedback.ringout import RingOut, RingOutConfig
+        t = [0.0]
+        desk = SimDesk(SR)
+        ro = RingOut(desk, RingOutConfig(start_db=-20, max_db=0, step_s=1), clock=lambda: t[0], log=lambda *_: None)
+        ro.start()
+        for _ in range(5):
+            t[0] += 1.01
+            ro.tick(-40)
+        self.assertGreater(desk.fader_db, -20)
+        ro.stop()
+        self.assertEqual(desk.fader_db, -20)

@@ -19,6 +19,7 @@ Sources for the message formats (public vendor docs):
 """
 from __future__ import annotations
 
+import copy
 import json
 import math
 import socket
@@ -48,6 +49,12 @@ class DryRun:
     def clear_notch(self, band):
         self.log(f"[dry-run] {self.target} band {band}: flat")
 
+    def set_fader(self, db):
+        self.log(f"[dry-run] {self.target} fader {db:+.1f} dB")
+
+    def view(self, target):
+        return DryRun(target, log=self.log)
+
     def close(self):
         pass
 
@@ -71,6 +78,18 @@ AH_HDR = bytes([0xF0, 0x00, 0x00, 0x1A, 0x50, 0x11, 0x01, 0x00])
 QU_BOX_IDS = {1: "Qu-16", 2: "Qu-24", 3: "Qu-32", 4: "Qu-Pac", 5: "Qu-SB"}
 QU_PEQ_IN = 0x11
 QU_PEQ_VX = 0x07
+QU_FADER = 0x17
+# Fader 7-bit value <-> dB, key points from the Qu MIDI Protocol V1.9 (verify on the desk).
+QU_FADER_POINTS = [(0x00, -90.0), (0x0C, -45), (0x10, -40), (0x17, -35), (0x1F, -30), (0x27, -25),
+                   (0x2F, -20), (0x36, -15), (0x3F, -10), (0x4F, -5), (0x62, 0), (0x72, 5), (0x7F, 10)]
+
+
+def qu_fader_value(db: float) -> int:
+    db = max(-90.0, min(10.0, db))
+    for (v0, d0), (v1, d1) in zip(QU_FADER_POINTS, QU_FADER_POINTS[1:]):
+        if d0 <= db <= d1:
+            return round(v0 + (v1 - v0) * (db - d0) / (d1 - d0))
+    return 0x7F
 
 
 def qu_channel_code(target: str) -> int:
@@ -205,8 +224,22 @@ class QuDesk:
             if not self.stop.is_set():
                 self.log(f"[qu] connection error: {e}")
 
+    def view(self, target):
+        """Same connection, another channel or mix (the Qu allows only one TCP client)."""
+        v = copy.copy(self)
+        v.parent = getattr(self, "parent", None) or self
+        v.ch, v.target, v._owner = qu_channel_code(target), target, False
+        v._validate()
+        return v
+
+    def _validate(self):
+        pass
+
+    def set_fader(self, db):
+        self._send([self.nrpn(QU_FADER, qu_fader_value(db))], f"fader {db:+.1f} dB")
+
     def nrpn(self, pid, va, vx=QU_PEQ_VX) -> bytes:
-        s = self.status
+        s = getattr(self, "parent", self).status  # the parent learns the desk's MIDI channel
         return bytes([s, 0x63, self.ch, s, 0x62, pid, s, 0x06, va & 0x7F, s, 0x26, vx & 0x7F])
 
     def _send(self, msgs, label):
@@ -231,6 +264,8 @@ class QuDesk:
         self._send([self.nrpn(g, self.scale.gain(0.0))], f"PEQ {QU_BAND_NAMES[band]} flat")
 
     def close(self):
+        if not getattr(self, "_owner", True):
+            return
         self.stop.set()
         if self.sock:
             self.sock.close()
@@ -243,8 +278,11 @@ class QuGeqDesk(QuDesk):
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
+        self._validate()
+
+    def _validate(self):
         if not (0x60 <= self.ch <= 0x67):
-            raise ValueError("the Qu GEQ is on mixes and LR only: use a target such as Mix1 or LR")
+            raise ValueError(f"the Qu GEQ is on mixes and LR only ({self.target}): use a target such as Mix1 or LR")
 
     def set_notch(self, n: Notch):
         msgs = [self.nrpn(QU_GEQ_GAIN, self.scale.gain(n.gain_db), n.band - 1), self.nrpn(QU_GEQ_IN, 0x01, 0x00)]
@@ -264,10 +302,7 @@ class Dm7Desk:
     def __init__(self, host, target, apply=False, log=print):
         self.log = log
         self.box = None
-        kind, _, idx = target.partition(":")
-        if kind not in ("InCh", "Mix", "Mtrx") or not idx.isdigit():
-            raise ValueError("DM7 target looks like InCh:0, Mix:3 or Mtrx:1 (0-based index)")
-        self.kind, self.x, self.target = kind, int(idx), target
+        self.kind, self.x, self.target = self._parse(target)
         self.apply = apply
         self.sock = None
         if apply:
@@ -307,6 +342,23 @@ class Dm7Desk:
             pass
 
     @staticmethod
+    def _parse(target):
+        kind, _, idx = target.partition(":")
+        if kind not in ("InCh", "Mix", "Mtrx") or not idx.isdigit():
+            raise ValueError(f"DM7 target {target!r} should look like InCh:0, Mix:3 or Mtrx:1 (0-based index)")
+        return kind, int(idx), target
+
+    def view(self, target):
+        v = copy.copy(self)
+        v.kind, v.x, v.target = self._parse(target)
+        v._owner = False
+        return v
+
+    def set_fader(self, db):
+        value = -32768 if db <= -90 else round(max(-90.0, min(10.0, db)) * 100)
+        self._line(f"set MIXER:Current/{self.kind}/Fader/Level {self.x} 0 {value}")
+
+    @staticmethod
     def check_bands(bands):
         bad = [b for b in bands if not 1 <= b <= 4]
         if bad:
@@ -343,6 +395,8 @@ class Dm7Desk:
         self._set("Band/Gain", band, 0)
 
     def close(self):
+        if not getattr(self, "_owner", True):
+            return
         if self.sock:
             self.stop.set()
             self.sock.close()

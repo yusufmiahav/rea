@@ -46,17 +46,15 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title(APP)
-        root.geometry("820x620")
-        root.minsize(700, 520)
+        root.geometry("1000x800")
+        root.minsize(860, 680)
         self.q = queue.Queue()
         sys.stdout = QueueWriter(self.q)
         sys.stderr = QueueWriter(self.q)
         self.running = False
         self.stream = None
-        self.sup = None
         self.desk = None
         self.blocks = queue.Queue(maxsize=200)
-        self.peak_db = -120.0
         self.devices = []
         self.mode = "dry"
         self._build()
@@ -78,20 +76,13 @@ class App:
         top = ttk.Frame(tab)
         top.pack(fill="x", **pad)
 
-        audio = ttk.LabelFrame(top, text="Audio input (a feed from the desk, taken after the EQ)")
+        audio = ttk.LabelFrame(top, text="Audio input (feeds from the desk, taken after the EQ)")
         audio.pack(fill="x", **pad)
         self.dev_var = tk.StringVar()
-        self.dev_box = ttk.Combobox(audio, textvariable=self.dev_var, state="readonly", width=60)
-        self.dev_box.grid(row=0, column=0, columnspan=3, sticky="we", **pad)
-        ttk.Button(audio, text="Refresh", command=self.refresh_devices).grid(row=0, column=3, **pad)
-        ttk.Label(audio, text="Channel").grid(row=1, column=0, sticky="e", **pad)
-        self.chan_var = tk.IntVar(value=1)
-        ttk.Spinbox(audio, from_=1, to=64, textvariable=self.chan_var, width=5).grid(row=1, column=1, sticky="w", **pad)
-        self.meter = ttk.Progressbar(audio, maximum=60, length=260)
-        self.meter.grid(row=1, column=2, sticky="we", **pad)
-        self.meter_lbl = ttk.Label(audio, text="-- dBFS", width=10)
-        self.meter_lbl.grid(row=1, column=3, **pad)
-        audio.columnconfigure(2, weight=1)
+        self.dev_box = ttk.Combobox(audio, textvariable=self.dev_var, state="readonly", width=70)
+        self.dev_box.grid(row=0, column=0, sticky="we", **pad)
+        ttk.Button(audio, text="Refresh", command=self.refresh_devices).grid(row=0, column=1, **pad)
+        audio.columnconfigure(0, weight=1)
 
         desk = ttk.LabelFrame(top, text="Desk")
         desk.pack(fill="x", **pad)
@@ -100,34 +91,50 @@ class App:
         ttk.Label(desk, text="IP").grid(row=0, column=1, sticky="e")
         self.host_var = tk.StringVar()
         ttk.Entry(desk, textvariable=self.host_var, width=16).grid(row=0, column=2, **pad)
-        ttk.Label(desk, text="Target").grid(row=0, column=3, sticky="e")
-        self.target_var = tk.StringVar(value="Ip1")
-        ttk.Entry(desk, textvariable=self.target_var, width=10).grid(row=0, column=4, **pad)
-        ttk.Label(desk, text="PEQ bands").grid(row=0, column=5, sticky="e")
-        self.bands_var = tk.StringVar(value="2,3")
-        ttk.Entry(desk, textvariable=self.bands_var, width=8).grid(row=0, column=6, **pad)
-        ttk.Label(desk, text="Qu MIDI ch").grid(row=1, column=1, sticky="e")
+        ttk.Label(desk, text="Qu MIDI ch").grid(row=0, column=3, sticky="e")
         self.midi_var = tk.IntVar(value=1)
-        ttk.Spinbox(desk, from_=1, to=16, textvariable=self.midi_var, width=5).grid(row=1, column=2, sticky="w", **pad)
-        ttk.Label(desk, text="Target: Qu Ip1 / ST1 / Mix1 / LR    DM7 InCh:0 / Mix:3 (0-based)\n"
-                             "PEQ bands 1-4 as on the desk: 1=LF 2=LM 3=HM 4=HF (GEQ mode ignores this)",
-                  foreground="#666", justify="left").grid(row=1, column=3, columnspan=4, sticky="w", **pad)
+        ttk.Spinbox(desk, from_=1, to=16, textvariable=self.midi_var, width=5).grid(row=0, column=4, sticky="w", **pad)
         self.apply_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(desk, text="Write to the desk (off = only show what it would send)",
-                        variable=self.apply_var).grid(row=2, column=0, columnspan=7, sticky="w", **pad)
+                        variable=self.apply_var).grid(row=1, column=0, columnspan=5, sticky="w", **pad)
+
+        rows = ttk.LabelFrame(top, text="Channels to watch (each input channel corrects its own desk target)")
+        rows.pack(fill="x", **pad)
+        ed = ttk.Frame(rows)
+        ed.pack(fill="x")
+        ttk.Label(ed, text="Input ch").pack(side="left", padx=(6, 2))
+        self.chan_var = tk.IntVar(value=1)
+        ttk.Spinbox(ed, from_=1, to=64, textvariable=self.chan_var, width=4).pack(side="left")
+        ttk.Label(ed, text="Target").pack(side="left", padx=(10, 2))
+        self.target_var = tk.StringVar(value="Ip1")
+        ttk.Entry(ed, textvariable=self.target_var, width=9).pack(side="left")
+        ttk.Label(ed, text="PEQ bands").pack(side="left", padx=(10, 2))
+        self.bands_var = tk.StringVar(value="2,3")
+        ttk.Entry(ed, textvariable=self.bands_var, width=8).pack(side="left")
+        ttk.Button(ed, text="Add / update", command=self.add_row).pack(side="left", padx=6)
+        ttk.Button(ed, text="Remove", command=self.remove_row).pack(side="left")
+        ttk.Label(rows, text="Target: Qu Ip1 / ST1 / Mix1 / LR, DM7 InCh:0 / Mix:3 (0-based).  "
+                             "PEQ bands 1-4 as on the desk: 1=LF 2=LM 3=HM 4=HF (GEQ mode ignores bands).",
+                  foreground="#666").pack(fill="x", padx=6)
+        self.rows_tv = ttk.Treeview(rows, columns=("chan", "target", "bands", "level", "cuts"),
+                                    show="headings", height=4)
+        for col, title, w in (("chan", "Input ch", 70), ("target", "Target", 90), ("bands", "PEQ bands", 90),
+                              ("level", "Level", 80), ("cuts", "Cuts on the desk", 420)):
+            self.rows_tv.heading(col, text=title)
+            self.rows_tv.column(col, width=w, anchor="w")
+        self.rows_tv.pack(fill="x", padx=6, pady=4)
+        self.rows_tv.bind("<<TreeviewSelect>>", lambda e: self._edit_selected())
+        self.rows = []  # [{"chan": 1, "target": "Ip1", "bands": "2,3"}]
 
         tune = ttk.LabelFrame(top, text="Detection")
         tune.pack(fill="x", **pad)
         ttk.Label(tune, text="Sensitivity").grid(row=0, column=0, **pad)
         self.sens_var = tk.DoubleVar(value=16.0)
-        ttk.Scale(tune, from_=24, to=10, variable=self.sens_var, length=220).grid(row=0, column=1, **pad)
-        ttk.Label(tune, text="(left = only loud, obvious howls; right = catches them earlier)",
-                  foreground="#666").grid(row=0, column=2, sticky="w", **pad)
-        ttk.Label(tune, text="Ignore below (dBFS)").grid(row=1, column=0, **pad)
+        ttk.Scale(tune, from_=24, to=10, variable=self.sens_var, length=200).grid(row=0, column=1, **pad)
+        ttk.Label(tune, text="(left = only obvious howls; right = earlier)", foreground="#666").grid(row=0, column=2, sticky="w")
+        ttk.Label(tune, text="Ignore below (dBFS)").grid(row=0, column=3, **pad)
         self.floor_var = tk.IntVar(value=-50)
-        ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6).grid(row=1, column=1, sticky="w", **pad)
-        ttk.Label(tune, text="(quiet steady tones such as hum sit below this and are ignored)",
-                  foreground="#666").grid(row=1, column=2, sticky="w", **pad)
+        ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6).grid(row=0, column=4, sticky="w", **pad)
 
         btns = ttk.Frame(tab)
         btns.pack(fill="x", **pad)
@@ -139,19 +146,35 @@ class App:
         ttk.Button(btns, text="Clear notches", command=self.clear).pack(side="left", **pad)
         ttk.Button(btns, text="Run simulation", command=self.simulate).pack(side="right", **pad)
 
-        mid = ttk.Panedwindow(tab, orient="horizontal")
-        mid.pack(fill="both", expand=True, **pad)
-        nf = ttk.LabelFrame(mid, text="Notches on the desk")
-        self.notch_list = tk.Listbox(nf, width=34, font=("Consolas", 10))
-        self.notch_list.pack(fill="both", expand=True)
-        mid.add(nf, weight=1)
-        lf = ttk.LabelFrame(mid, text="Log")
-        self.log_txt = tk.Text(lf, height=12, wrap="none", font=("Consolas", 9), state="disabled")
+        ro = ttk.LabelFrame(tab, text="Ring out: raise a fader slowly and cut each frequency that rings (press Start first)")
+        ro.pack(fill="x", **pad)
+        ttk.Label(ro, text="Fader of").grid(row=0, column=0, sticky="e", **pad)
+        self.ro_target = tk.StringVar()
+        self.ro_box = ttk.Combobox(ro, textvariable=self.ro_target, state="readonly", width=10)
+        self.ro_box.grid(row=0, column=1, sticky="w", **pad)
+        self.ro_vars = {}
+        for i, (key, label, default) in enumerate((("start_db", "Start dB", -30.0), ("max_db", "Max dB", 0.0),
+                                                   ("step_db", "Step dB", 1.0), ("step_s", "Every s", 2.0),
+                                                   ("backoff_db", "Back off dB", 4.0), ("guard_dbfs", "Stop above dBFS", -3.0))):
+            ttk.Label(ro, text=label).grid(row=0, column=2 + 2 * i, sticky="e", padx=(8, 2))
+            v = tk.DoubleVar(value=default)
+            ttk.Entry(ro, textvariable=v, width=6).grid(row=0, column=3 + 2 * i, sticky="w")
+            self.ro_vars[key] = v
+        self.ro_btn = ttk.Button(ro, text="Start ring-out", command=self.toggle_ringout)
+        self.ro_btn.grid(row=1, column=0, columnspan=2, sticky="w", **pad)
+        self.ro_status = ttk.Label(ro, text="Idle. The fader never goes above Max, backs off on every howl, "
+                                            "and Stop puts it back to the start level.", foreground="#666")
+        self.ro_status.grid(row=1, column=2, columnspan=12, sticky="w", **pad)
+        self.ringout = None
+        self.ro_row = None
+
+        lf = ttk.LabelFrame(tab, text="Log")
+        lf.pack(fill="both", expand=True, **pad)
+        self.log_txt = tk.Text(lf, height=8, wrap="none", font=("Consolas", 9), state="disabled")
         sb = ttk.Scrollbar(lf, command=self.log_txt.yview)
         self.log_txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.log_txt.pack(fill="both", expand=True)
-        mid.add(lf, weight=3)
 
         self.status = ttk.Label(tab, text="Stopped", anchor="w")
         self.status.pack(fill="x", padx=8, pady=(0, 6))
@@ -162,14 +185,68 @@ class App:
         self.log_txt.see("end")
         self.log_txt.configure(state="disabled")
 
-    def _show_notches(self):
-        self.notch_list.delete(0, "end")
-        if not self.sup:
+    # ---------------------------------------------------------------- rows
+    def add_row(self):
+        chan, target, bands = self.chan_var.get(), self.target_var.get().strip(), self.bands_var.get().replace(" ", "")
+        if not target:
             return
-        for n in sorted(self.sup.manager.notches.values(), key=lambda n: n.band):
-            label = f"GEQ {n.freq_hz:g} Hz" if self.mode == "qu-geq" else \
-                f"{QU_BAND_NAMES.get(n.band, n.band) if self.mode == 'qu' else 'band ' + str(n.band)}  {n.freq_hz:8.1f} Hz"
-            self.notch_list.insert("end", f"{label}  {n.gain_db:+5.1f} dB")
+        if self.running:
+            messagebox.showinfo(APP, "Stop first, then change the channel list.")
+            return
+        self.rows = [r for r in self.rows if r["target"] != target]
+        self.rows.append({"chan": chan, "target": target, "bands": bands})
+        self.rows.sort(key=lambda r: r["chan"])
+        self._refresh_rows()
+
+    def remove_row(self):
+        if self.running:
+            messagebox.showinfo(APP, "Stop first, then change the channel list.")
+            return
+        sel = self.rows_tv.selection()
+        if sel:
+            del self.rows[self.rows_tv.index(sel[0])]
+            self._refresh_rows()
+
+    def _edit_selected(self):
+        sel = self.rows_tv.selection()
+        if sel:
+            r = self.rows[self.rows_tv.index(sel[0])]
+            self.chan_var.set(r["chan"]); self.target_var.set(r["target"]); self.bands_var.set(r["bands"])
+
+    def _refresh_rows(self):
+        self.rows_tv.delete(*self.rows_tv.get_children())
+        for r in self.rows:
+            self.rows_tv.insert("", "end", values=(r["chan"], r["target"], r["bands"], r.get("level_txt", ""),
+                                                   r.get("cuts_txt", "")))
+        self.ro_box["values"] = [r["target"] for r in self.rows]
+        if self.rows and self.ro_target.get() not in self.ro_box["values"]:
+            self.ro_target.set(self.rows[0]["target"])
+
+    def _cuts_text(self, sup):
+        out = []
+        for n in sorted(sup.manager.notches.values(), key=lambda n: n.band):
+            if self.mode == "qu-geq":
+                out.append(f"{n.freq_hz:g}Hz {n.gain_db:+.0f}")
+            else:
+                name = QU_BAND_NAMES.get(n.band, n.band) if self.mode == "qu" else f"B{n.band}"
+                out.append(f"{name} {n.freq_hz:.0f}Hz {n.gain_db:+.0f}")
+        return ", ".join(out)
+
+    def _show_notches(self):
+        for item, r in zip(self.rows_tv.get_children(), self.rows):
+            if "sup" not in r:
+                continue
+            r["level_txt"] = f"{max(-90.0, r.get('peak', -120.0)):5.1f} dBFS"
+            r["cuts_txt"] = self._cuts_text(r["sup"])
+            self.rows_tv.item(item, values=(r["chan"], r["target"], r["bands"], r["level_txt"], r["cuts_txt"]))
+        if self.ringout:
+            state = "running" if self.ringout.running else "finished"
+            txt = f"{self.ro_row['target']} fader {self.ringout.level:+.1f} dB ({state})"
+            if self.ringout.result:
+                txt = self.ringout.result
+            self.ro_status.configure(text=txt, foreground="#000")
+            if not self.ringout.running:
+                self.ro_btn.configure(text="Start ring-out")
 
     # ------------------------------------------------------------ devices
     def refresh_devices(self):
@@ -188,8 +265,8 @@ class App:
             self.dev_var.set(names[0])
 
     # ---------------------------------------------------------- run/stop
-    def _make_desk(self, kind, apply):
-        host, target = self.host_var.get().strip(), self.target_var.get().strip()
+    def _make_desk(self, kind, apply, target):
+        host = self.host_var.get().strip()
         log = lambda m: self.q.put(("log", m))
         if kind == "qu-geq":
             return QuGeqDesk(host, target, midi_channel=self.midi_var.get(), apply=apply, log=log)
@@ -210,52 +287,63 @@ class App:
     def start(self):
         kind = DESKS[self.desk_var.get()]
         apply = self.apply_var.get() and kind != "dry"
+        if not self.rows:
+            self.add_row()  # use what's typed in the editor
+        if not self.rows:
+            messagebox.showerror(APP, "Add at least one channel to watch.")
+            return
         if apply and not self.host_var.get().strip():
             messagebox.showerror(APP, "Enter the desk's IP address first.")
             return
-        if apply and not messagebox.askyesno(APP, "This will change the EQ on the desk. Carry on?"):
+        if apply and not messagebox.askyesno(APP, f"This will change the EQ on {len(self.rows)} desk channel(s). Carry on?"):
             return
         if not self.dev_var.get():
             messagebox.showerror(APP, "No audio input selected.")
             return
+        self.desk = None
         try:
-            bands = [int(b) for b in self.bands_var.get().replace(" ", "").split(",") if b]
-            self.desk = None
-            if kind in ("qu", "dm7"):
-                (QuDesk if kind == "qu" else Dm7Desk).check_bands(bands)
             self.mode = kind
-            self.desk = self._make_desk(kind, apply)
-            link = self.desk.check_link()
-            self.log(f"Desk link OK: {link}")
+            for r in self.rows:
+                r["band_list"] = [int(b) for b in r["bands"].split(",") if b]
+                if kind in ("qu", "dm7"):
+                    (QuDesk if kind == "qu" else Dm7Desk).check_bands(r["band_list"])
             dev_index = int(self.dev_var.get().split(":", 1)[0])
             info = dict(self.devices)[dev_index]
             sr = int(info["default_samplerate"]) or 48000
-            chan = self.chan_var.get() - 1
-            if chan >= info["max_input_channels"]:
-                raise ValueError(f"that device has {info['max_input_channels']} input channels")
-            ncfg = NotchConfig(bands=bands, max_depth_db=MAX_DEPTH[kind])
-            manager = GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq" else None
-            self.sup = Suppressor(self.desk, DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get(),
-                                                            floor_db=float(self.floor_var.get())),
-                                  ncfg, log=lambda m: self.q.put(("log", m)), manager=manager)
-            self.sup.frozen = self.freeze_var.get()
+            nch = max(r["chan"] for r in self.rows)
+            if nch > info["max_input_channels"]:
+                raise ValueError(f"that audio device has {info['max_input_channels']} input channels; "
+                                 f"input ch {nch} doesn't exist")
+            # One connection to the desk (the Qu allows only one), one view per target.
+            self.desk = self._make_desk(kind, apply, self.rows[0]["target"])
+            self.log(f"Desk link OK: {self.desk.check_link()}")
             saved = self._read_saved_notches(kind)
-            if saved and messagebox.askyesno(APP, "Put back the notches from last time?"):
-                self.sup.manager.load_json(json.dumps(saved))
-                for n in self.sup.manager.notches.values():
-                    self.desk.set_notch(n)
+            for r in self.rows:
+                r["desk"] = self.desk.view(r["target"])
+                ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind])
+                manager = GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq" else None
+                r["sup"] = Suppressor(r["desk"], DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get(),
+                                                                floor_db=float(self.floor_var.get())),
+                                      ncfg, log=lambda m, t=r["target"]: self.q.put(("log", f"{t}: {m}")),
+                                      manager=manager, on_event=lambda a, e, row=r: self._on_howl(row, a, e))
+                r["sup"].frozen = self.freeze_var.get()
+                r["peak"] = -120.0
+            if saved and messagebox.askyesno(APP, "Put back the cuts from last time?"):
+                for r in self.rows:
+                    if saved.get(r["target"]):
+                        r["sup"].manager.load_json(json.dumps(saved[r["target"]]))
+                        for n in r["sup"].manager.notches.values():
+                            r["desk"].set_notch(n)
 
             import sounddevice as sd
 
             def cb(indata, frames, t, status):
-                x = indata[:, chan].astype(np.float64)
-                self.peak_db = 20 * np.log10(np.abs(x).max() + 1e-9)
                 try:
-                    self.blocks.put_nowait(x)
+                    self.blocks.put_nowait(indata.astype(np.float64))
                 except queue.Full:
                     pass
 
-            self.stream = sd.InputStream(device=dev_index, channels=chan + 1, samplerate=sr,
+            self.stream = sd.InputStream(device=dev_index, channels=nch, samplerate=sr,
                                          blocksize=512, dtype="float32", callback=cb)
             self.running = True
             threading.Thread(target=self._worker, daemon=True).start()
@@ -264,12 +352,13 @@ class App:
             self.running = False
             if self.desk:
                 self.desk.close()
+                self.desk = None
             messagebox.showerror(APP, f"Could not start: {e}")
             return
         self.start_btn.configure(text="Stop")
-        self.status.configure(text=f"Listening at {sr} Hz -> {self.desk_var.get()} {self.target_var.get()}"
+        self.status.configure(text=f"Listening at {sr} Hz on {len(self.rows)} channel(s) -> {self.desk_var.get()}"
                                    f"{'  (WRITING TO DESK)' if apply else '  (dry run)'}")
-        self.log("Started")
+        self.log("Started: " + ", ".join(f"in {r['chan']} -> {r['target']}" for r in self.rows))
         self._save_settings()
 
     def _read_saved_notches(self, kind):
@@ -278,11 +367,14 @@ class App:
                 data = json.load(f)
         except (OSError, ValueError):
             return None
-        # Files from the first version used different band numbers: ignore them.
-        if not isinstance(data, dict) or data.get("version") != 2 or data.get("mode") != kind \
-                or data.get("target") != self.target_var.get():
+        # Older files used other band numbers or held one channel only: ignore them.
+        if not isinstance(data, dict) or data.get("version") != 3 or data.get("mode") != kind:
             return None
-        return data.get("notches") or None
+        return data.get("targets") or None
+
+    def _on_howl(self, row, action, ev):
+        if self.ringout and self.ro_row is row:
+            self.ringout.on_howl(action, ev.freq_hz)
 
     def _worker(self):
         while self.running:
@@ -290,23 +382,30 @@ class App:
                 x = self.blocks.get(timeout=0.2)
             except queue.Empty:
                 continue
-            try:
-                self.sup.process(x)
-            except Exception as e:
-                self.q.put(("log", f"error: {type(e).__name__}: {e}"))
-            self.q.put(("notches", None))
+            for r in self.rows:
+                try:
+                    col = x[:, r["chan"] - 1]
+                    r["peak"] = float(20 * np.log10(np.abs(col).max() + 1e-9))
+                    r["sup"].process(col)
+                    if self.ringout and self.ro_row is r:
+                        self.ringout.tick(r["peak"])
+                except Exception as e:
+                    self.q.put(("log", f"{r['target']}: error: {type(e).__name__}: {e}"))
 
     def stop(self):
+        if self.ringout and self.ringout.running:
+            self.ringout.stop()
         self.running = False
         if self.stream:
             self.stream.close()
             self.stream = None
-        if self.sup:
+        if any("sup" in r for r in self.rows):
             os.makedirs(STATE_DIR, exist_ok=True)
             with open(NOTCHES, "w", encoding="utf-8") as f:
-                json.dump({"version": 2, "mode": self.mode, "target": self.target_var.get(),
-                           "notches": json.loads(self.sup.manager.to_json())}, f, indent=2)
-            self.log(f"Saved notches to {NOTCHES}")
+                json.dump({"version": 3, "mode": self.mode,
+                           "targets": {r["target"]: json.loads(r["sup"].manager.to_json())
+                                       for r in self.rows if "sup" in r}}, f, indent=2)
+            self.log(f"Saved cuts to {NOTCHES}")
         if self.desk:
             self.desk.close()
             self.desk = None
@@ -314,16 +413,53 @@ class App:
         self.status.configure(text="Stopped")
 
     def clear(self):
-        if self.sup and self.desk:
-            self.sup.clear()
-            self.log("Cleared all notches")
-            self._show_notches()
-        else:
+        if not self.running:
             self.log("Start first, then clear (clearing talks to the desk)")
+            return
+        for r in self.rows:
+            r["sup"].clear()
+        self.log("Cleared all cuts")
+        self._show_notches()
 
     def _apply_freeze(self):
-        if self.sup:
-            self.sup.frozen = self.freeze_var.get()
+        for r in self.rows:
+            if "sup" in r:
+                r["sup"].frozen = self.freeze_var.get()
+
+    # ------------------------------------------------------------ ring-out
+    def toggle_ringout(self):
+        from feedback.ringout import RingOut, RingOutConfig
+        if self.ringout and self.ringout.running:
+            self.ringout.stop()
+            self.ro_btn.configure(text="Start ring-out")
+            return
+        if not self.running:
+            messagebox.showerror(APP, "Press Start first so the app is listening.")
+            return
+        row = next((r for r in self.rows if r["target"] == self.ro_target.get()), None)
+        if row is None:
+            messagebox.showerror(APP, "Pick which channel's fader to ride.")
+            return
+        try:
+            cfg = RingOutConfig(**{k: float(v.get()) for k, v in self.ro_vars.items()})
+            if cfg.max_db > 10 or cfg.step_db > 3 or cfg.step_s < 0.5:
+                raise ValueError("keep Max at +10 dB or less, Step at 3 dB or less, and Every at 0.5 s or more")
+        except (ValueError, tk.TclError) as e:
+            messagebox.showerror(APP, f"Check the ring-out settings: {e}")
+            return
+        if not messagebox.askyesno(APP, f"Ring out {row['target']}: its fader will go to {cfg.start_db:+g} dB and "
+                                        f"climb to at most {cfg.max_db:+g} dB. Turn the system down to a safe "
+                                        f"level first. Carry on?"):
+            return
+        self.ro_row = row
+        self.ringout = RingOut(row["desk"], cfg, log=lambda m: self.q.put(("log", m)))
+        try:
+            self.ringout.start()
+        except ValueError as e:
+            messagebox.showerror(APP, str(e))
+            self.ringout = None
+            return
+        self.ro_btn.configure(text="STOP ring-out")
 
     def simulate(self):
         self.log("Simulating a room that howls at 2 kHz, with speech, for 8 s...")
@@ -475,17 +611,16 @@ class App:
                     pass
         except queue.Empty:
             pass
-        if self.running:
+        if self.running or self.ringout:
             self._show_notches()
-            v = max(-60.0, self.peak_db)
-            self.meter["value"] = v + 60
-            self.meter_lbl.configure(text=f"{v:5.1f} dBFS")
-        self.root.after(100, self._pump)
+        self.root.after(150, self._pump)
 
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
                 ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor")}
+        data["rows"] = [{k: r[k] for k in ("chan", "target", "bands")} for r in self.rows]
+        data["ringout"] = {k: v.get() for k, v in self.ro_vars.items()}
         with open(SETTINGS, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
@@ -493,6 +628,12 @@ class App:
         try:
             with open(SETTINGS, encoding="utf-8") as f:
                 data = json.load(f)
+            for r in data.pop("rows", []):
+                self.rows.append({"chan": int(r["chan"]), "target": r["target"], "bands": r["bands"]})
+            for k, v in data.pop("ringout", {}).items():
+                if k in self.ro_vars:
+                    self.ro_vars[k].set(v)
+            self._refresh_rows()
             for k, v in data.items():
                 if k == "desk" and v not in DESKS:
                     continue  # desk names changed between versions
@@ -549,27 +690,82 @@ def run_tool_mode(args):
         return 0
 
 
+def smoke_drive(root):
+    """Runs the real window against a fake audio device: two channels, one with a growing howl."""
+    import sounddevice as sd
+    from feedback import synth
+    global STATE_DIR, SETTINGS, NOTCHES
+    import tempfile
+    STATE_DIR = tempfile.mkdtemp()
+    SETTINGS = os.path.join(STATE_DIR, "settings.json")
+    NOTCHES = os.path.join(STATE_DIR, "notches.json")
+    messagebox.askyesno = lambda *a, **k: True
+    messagebox.showerror = lambda *a, **k: print("showerror:", *a[1:])
+    messagebox.showinfo = lambda *a, **k: print("showinfo:", *a[1:])
+
+    class FakeStream:
+        def __init__(self, device, channels, samplerate, blocksize, dtype, callback):
+            self.cb, self.n, self.sr, self.bs, self.on = callback, channels, samplerate, blocksize, False
+            sig = np.stack([synth.speechlike(8) + synth.howl(8, 2500.0), synth.speechlike(8, seed=3)], axis=1)
+            self.sig = sig[:, :channels].astype(np.float32)
+
+        def start(self):
+            self.on = True
+            threading.Thread(target=self._run, daemon=True).start()
+
+        def _run(self):
+            i = 0
+            while self.on and i + self.bs <= len(self.sig):
+                self.cb(self.sig[i:i + self.bs], self.bs, None, None)
+                i += self.bs
+                time.sleep(self.bs / self.sr / 4)  # 4x real time
+
+        def close(self):
+            self.on = False
+
+    sd.InputStream = FakeStream
+    app = App(root)
+    app.devices = [(0, {"name": "fake", "max_input_channels": 2, "default_samplerate": 48000})]
+    app.dev_var.set("0: fake")
+    app.desk_var.set("Dry run (no desk)")
+    app.chan_var.set(1); app.target_var.set("Ip1"); app.bands_var.set("2,3"); app.add_row()
+    app.chan_var.set(2); app.target_var.set("Mix1"); app.bands_var.set("1,2,3,4"); app.add_row()
+    app.start()
+    app.ro_target.set("Mix1")
+    for k, v in (("start_db", -20), ("max_db", -15), ("step_s", 0.5)):
+        app.ro_vars[k].set(v)
+    root.after(500, app.toggle_ringout)
+    root.after(7000, app.stop)
+    return app
+
+
 def main():
     if "--tool" in sys.argv:
         i = sys.argv.index("--tool")
         sys.exit(run_tool_mode(sys.argv[i + 1:]))
     if "--selftest" in sys.argv:
         sys.exit(selftest())
-    if "--smoke-gui" in sys.argv:  # build check: open the window, then close it
+    if "--smoke-gui" in sys.argv:  # build check: drive the window with a fake 2-channel audio device
         out = os.environ.get("SELFTEST_OUT", "smoke.txt")
         root = tk.Tk()
         try:
-            App(root)
+            app = smoke_drive(root)
         except Exception:
             import traceback
             with open(out, "w") as f:
                 f.write(traceback.format_exc())
             raise
+
         def done():
+            text = app.log_txt.get("1.0", "end")
+            problems = [w for w in ("Started: in 1 -> Ip1, in 2 -> Mix1", "[ring-out] Mix1", "Saved cuts")
+                        if w not in text]
+            if "error:" in text:
+                problems.append("an error was logged")
             with open(out, "w") as f:
-                f.write("OK")
+                f.write("OK" if not problems else "FAIL: " + "; ".join(problems) + "\n" + text)
             root.destroy()
-        root.after(2500, done)
+        root.after(9000, done)
         root.mainloop()
         return
     root = tk.Tk()

@@ -20,6 +20,9 @@ class SimDesk:
         self.sr = sr
         self.bands = {}
         self.log = []
+        self.target = "sim"
+        self.fader_db = 0.0
+        self.fader_log = []
 
     def set_notch(self, n: Notch):
         old = self.bands.get(n.band)
@@ -28,6 +31,10 @@ class SimDesk:
             f.z1, f.z2 = old.z1, old.z2
         self.bands[n.band] = f
         self.log.append((n.band, n.freq_hz, n.gain_db))
+
+    def set_fader(self, db):
+        self.fader_db = db
+        self.fader_log.append(db)
 
     def clear_notch(self, band):
         self.bands.pop(band, None)
@@ -38,11 +45,11 @@ class SimDesk:
     def process(self, x):
         for f in list(self.bands.values()):
             x = f.process(x)
-        return x
+        return x * 10 ** (self.fader_db / 20)
 
 
 def run_loop(source, sr, suppressor, desk: SimDesk, howl_hz=2000.0, loop_gain_db=1.0,
-             delay=1024, block=512, broadband_gain=0.3):
+             delay=1024, block=512, broadband_gain=0.3, on_block=None):
     """Returns the mic signal. `suppressor` may be None (no feedback control)."""
     assert block <= delay
     room_res = Biquad.bandpass(sr, howl_hz, q=8.0, peak_gain=10 ** (loop_gain_db / 20) - broadband_gain)
@@ -57,6 +64,8 @@ def run_loop(source, sr, suppressor, desk: SimDesk, howl_hz=2000.0, loop_gain_db
         mic[s:e] = m
         if suppressor is not None:
             suppressor.process(m)
+        if on_block is not None:
+            on_block(m)
         out = desk.process(m.copy())
         spk[s + delay:e + delay] = np.clip(out, -4, 4)  # soft limit so the no-control case stays finite
     return mic[:n]
