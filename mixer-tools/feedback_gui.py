@@ -90,8 +90,10 @@ class App:
     def __init__(self, root):
         self.root = root
         root.title(APP)
-        root.geometry("1120x860")
-        root.minsize(980, 760)
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        w, h = min(1120, sw - 40), min(860, sh - 80)
+        root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+{max(0, (sh - h) // 3)}")
+        root.minsize(min(900, w), min(640, h))
         try:
             import sv_ttk  # Windows 11 style theme
             sv_ttk.set_theme("dark")
@@ -123,7 +125,7 @@ class App:
     def _card(self, parent, title, subtitle=None):
         outer = ttk.LabelFrame(parent, text=f"  {title}  ", padding=(12, 8))
         if subtitle:
-            ttk.Label(outer, text=subtitle, style="Muted.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(0, 6))
+            ttk.Label(outer, text=subtitle, style="Muted.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=(0, 6))
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
         return outer, body
@@ -303,13 +305,14 @@ class App:
                   ("step_db", "Step (dB)", 1.0, "How much the fader rises each step. Up to 3 dB."),
                   ("step_s", "Every (s)", 2.0, "How long to wait between steps, so feedback has time to show."),
                   ("backoff_db", "Back off (dB)", 4.0, "How far the fader drops straight away when something rings."),
-                  ("guard_dbfs", "Emergency stop above (dBFS)", -3.0,
+                  ("guard_dbfs", "Safety limit (dBFS)", -3.0,
                    "If the input ever gets this loud, the fader drops 10 dB and ring-out stops."))
-        for i, (key, label, default, tip) in enumerate(fields, start=1):
-            ttk.Label(body, text=label).grid(row=0, column=i, sticky="w", padx=(0, 14))
+        for n, (key, label, default, tip) in enumerate(fields, start=1):
+            r, i = 2 * (n // 4), n % 4  # four per row so it fits a laptop screen
+            ttk.Label(body, text=label).grid(row=r, column=i, sticky="w", padx=(0, 14), pady=(8 if r else 0, 0))
             v = tk.DoubleVar(value=default)
             T(ttk.Spinbox(body, textvariable=v, from_=-90, to=10, increment=0.5, width=7), tip).grid(
-                row=1, column=i, sticky="w", padx=(0, 14))
+                row=r + 1, column=i, sticky="w", padx=(0, 14))
             self.ro_vars[key] = v
 
         act = ttk.Frame(tab)

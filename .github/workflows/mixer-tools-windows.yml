@@ -70,8 +70,8 @@ jobs:
           New-Item -ItemType Directory -Force shots | Out-Null
           $env:SELFTEST_OUT = "$PWD\smoke3.txt"
           $p = Start-Process -FilePath dist\MixerTools.exe -ArgumentList "--smoke-gui" -PassThru
-          Start-Sleep -Seconds 6; Shot "1-feedback"
-          Start-Sleep -Seconds 4; Shot "2-ringout"
+          Start-Sleep -Seconds 3; Shot "1-feedback"
+          Start-Sleep -Seconds 3; Shot "2-ringout"
           $p.WaitForExit(30000) | Out-Null
       - uses: actions/upload-artifact@v4
         with:
