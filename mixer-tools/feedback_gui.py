@@ -42,12 +42,64 @@ class QueueWriter:
         pass
 
 
+class Tooltip:
+    """Shows a short explanation when the mouse rests on a widget."""
+
+    def __init__(self, widget, text, delay=450):
+        self.widget, self.text, self.delay = widget, text, delay
+        self.win = None
+        self.job = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+
+    def _schedule(self, _e=None):
+        self._cancel()
+        self.job = self.widget.after(self.delay, self._show)
+
+    def _cancel(self):
+        if self.job:
+            self.widget.after_cancel(self.job)
+            self.job = None
+
+    def _show(self):
+        if self.win or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 6
+        self.win = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        try:
+            tw.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        frame = tk.Frame(tw, bg="#2b2b2b", padx=10, pady=7, highlightthickness=1, highlightbackground="#5a5a5a")
+        frame.pack()
+        tk.Label(frame, text=self.text, bg="#2b2b2b", fg="#f3f3f3", justify="left", wraplength=360,
+                 font=("Segoe UI", 9)).pack()
+
+    def _hide(self, _e=None):
+        self._cancel()
+        if self.win:
+            self.win.destroy()
+            self.win = None
+
+
 class App:
     def __init__(self, root):
         self.root = root
         root.title(APP)
-        root.geometry("1000x800")
-        root.minsize(860, 680)
+        root.geometry("1120x860")
+        root.minsize(980, 760)
+        try:
+            import sv_ttk  # Windows 11 style theme
+            sv_ttk.set_theme("dark")
+        except Exception:
+            # No theme package: make the custom style names exist so widgets still build.
+            st = ttk.Style(root)
+            st.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
+            st.layout("Switch.TCheckbutton", st.layout("TCheckbutton"))
         self.q = queue.Queue()
         sys.stdout = QueueWriter(self.q)
         sys.stderr = QueueWriter(self.q)
@@ -64,120 +116,247 @@ class App:
         root.after(100, self._pump)
 
     # ---------------------------------------------------------------- UI
-    def _build(self):
-        pad = {"padx": 6, "pady": 4}
-        nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True)
-        tab = ttk.Frame(nb)
-        nb.add(tab, text="Feedback suppressor")
-        tools = ttk.Frame(nb)
-        nb.add(tools, text="Qu-16 / DM7 tools")
-        self._build_tools(tools)
-        top = ttk.Frame(tab)
-        top.pack(fill="x", **pad)
+    def _tip(self, widget, text):
+        Tooltip(widget, text)
+        return widget
 
-        audio = ttk.LabelFrame(top, text="Audio input (feeds from the desk, taken after the EQ)")
-        audio.pack(fill="x", **pad)
+    def _card(self, parent, title, subtitle=None):
+        outer = ttk.LabelFrame(parent, text=f"  {title}  ", padding=(12, 8))
+        if subtitle:
+            ttk.Label(outer, text=subtitle, style="Muted.TLabel", wraplength=420, justify="left").pack(anchor="w", pady=(0, 6))
+        body = ttk.Frame(outer)
+        body.pack(fill="both", expand=True)
+        return outer, body
+
+    def _build(self):
+        T = self._tip
+        root = self.root
+        style = ttk.Style()
+        style.configure("Muted.TLabel", foreground="#8a8a8a")
+        style.configure("Title.TLabel", font=("Segoe UI Semibold", 17))
+        style.configure("Sub.TLabel", foreground="#8a8a8a", font=("Segoe UI", 10))
+        style.configure("Big.TButton", font=("Segoe UI Semibold", 12), padding=(22, 10))
+        style.configure("Pill.TLabel", font=("Segoe UI Semibold", 10), padding=(10, 3))
+
+        # Header
+        head = ttk.Frame(root, padding=(16, 12, 16, 4))
+        head.pack(fill="x")
+        ttk.Label(head, text="Mixer Tools", style="Title.TLabel").pack(side="left")
+        ttk.Label(head, text="   feedback control for Qu-16 and DM7", style="Sub.TLabel").pack(side="left", pady=(6, 0))
+        self.theme_btn = T(ttk.Button(head, text="Light mode", command=self.toggle_theme),
+                           "Switch between the dark and light look.")
+        self.theme_btn.pack(side="right")
+        self.mode_pill = tk.Label(head, text="  DRY RUN  ", bg="#3a3a3a", fg="#ffffff", font=("Segoe UI Semibold", 9))
+        self.mode_pill.pack(side="right", padx=10)
+        T(self.mode_pill, "DRY RUN: nothing is sent to the desk, the log shows what would be sent.\n"
+                          "LIVE: the app is changing EQ and faders on the desk.")
+
+        nb = self.nb = ttk.Notebook(root)
+        nb.pack(fill="both", expand=True, padx=12, pady=(4, 0))
+        tab = ttk.Frame(nb, padding=8)
+        nb.add(tab, text="  Feedback suppressor  ")
+        rotab = ttk.Frame(nb, padding=8)
+        nb.add(rotab, text="  Ring out  ")
+        tools = ttk.Frame(nb, padding=8)
+        nb.add(tools, text="  Desk tools  ")
+        self._build_tools(tools)
+
+        # ---- top row: three cards
+        top = ttk.Frame(tab)
+        top.pack(fill="x")
+        for i in range(3):
+            top.columnconfigure(i, weight=1, uniform="cards")
+
+        c1, desk = self._card(top, "1  Desk", "Which desk to control and how to reach it.")
+        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self.desk_var = tk.StringVar(value=list(DESKS)[0])
+        ttk.Label(desk, text="Desk and EQ").grid(row=0, column=0, sticky="w")
+        T(ttk.Combobox(desk, textvariable=self.desk_var, values=list(DESKS), state="readonly", width=30),
+          "Dry run: no desk, just shows what would happen.\n"
+          "Qu-16 PEQ: cuts on the parametric EQ of any channel or mix.\n"
+          "Qu-16 GEQ: cuts on the 28-band graphic EQ (mixes and LR only).\n"
+          "Yamaha DM7 PEQ: cuts on the DM7's parametric EQ.").grid(row=1, column=0, columnspan=2, sticky="we", pady=(2, 8))
+        ttk.Label(desk, text="Desk IP address").grid(row=2, column=0, sticky="w")
+        ttk.Label(desk, text="Qu MIDI ch").grid(row=2, column=1, sticky="w", padx=(8, 0))
+        self.host_var = tk.StringVar()
+        T(ttk.Entry(desk, textvariable=self.host_var, width=18),
+          "The desk's network address, e.g. 192.168.1.50.\nQu: Setup > Network.  DM7: SETUP > NETWORK > For Mixer Control.").grid(row=3, column=0, sticky="we")
+        self.midi_var = tk.IntVar(value=1)
+        T(ttk.Spinbox(desk, from_=1, to=16, textvariable=self.midi_var, width=5),
+          "The Qu's MIDI channel. The app reads it from the desk when it connects, so you rarely need to change this.").grid(row=3, column=1, sticky="w", padx=(8, 0))
+        self.apply_var = tk.BooleanVar(value=False)
+        T(ttk.Checkbutton(desk, text="Write to the desk", variable=self.apply_var, style="Switch.TCheckbutton",
+                          command=self._update_pill),
+          "Off: safe dry run, nothing is sent.\nOn: the app really changes EQ (and faders in ring-out) on the desk.").grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        desk.columnconfigure(0, weight=1)
+
+        c2, audio = self._card(top, "2  Audio input", "Where the app listens. Use a feed taken after the EQ, such as Qu USB or Dante.")
+        c2.grid(row=0, column=1, sticky="nsew", padx=6)
         self.dev_var = tk.StringVar()
-        self.dev_box = ttk.Combobox(audio, textvariable=self.dev_var, state="readonly", width=70)
-        self.dev_box.grid(row=0, column=0, sticky="we", **pad)
-        ttk.Button(audio, text="Refresh", command=self.refresh_devices).grid(row=0, column=1, **pad)
+        self.dev_box = T(ttk.Combobox(audio, textvariable=self.dev_var, state="readonly", width=34),
+                         "The sound card or desk USB/Dante interface carrying the channels you want to protect.\n"
+                         "The feed must be after the EQ (e.g. a direct out at pre-fader), or the app can't hear its own cuts.")
+        self.dev_box.grid(row=0, column=0, sticky="we")
+        T(ttk.Button(audio, text="Refresh", command=self.refresh_devices),
+          "Look for audio devices again (e.g. after plugging in the desk's USB).").grid(row=0, column=1, padx=(6, 0))
         audio.columnconfigure(0, weight=1)
 
-        desk = ttk.LabelFrame(top, text="Desk")
-        desk.pack(fill="x", **pad)
-        self.desk_var = tk.StringVar(value=list(DESKS)[0])
-        ttk.Combobox(desk, textvariable=self.desk_var, values=list(DESKS), state="readonly", width=30).grid(row=0, column=0, **pad)
-        ttk.Label(desk, text="IP").grid(row=0, column=1, sticky="e")
-        self.host_var = tk.StringVar()
-        ttk.Entry(desk, textvariable=self.host_var, width=16).grid(row=0, column=2, **pad)
-        ttk.Label(desk, text="Qu MIDI ch").grid(row=0, column=3, sticky="e")
-        self.midi_var = tk.IntVar(value=1)
-        ttk.Spinbox(desk, from_=1, to=16, textvariable=self.midi_var, width=5).grid(row=0, column=4, sticky="w", **pad)
-        self.apply_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(desk, text="Write to the desk (off = only show what it would send)",
-                        variable=self.apply_var).grid(row=1, column=0, columnspan=5, sticky="w", **pad)
+        c3, tune = self._card(top, "Detection", "How eager the app is to call something feedback.")
+        c3.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        ttk.Label(tune, text="Sensitivity").grid(row=0, column=0, sticky="w")
+        self.sens_var = tk.DoubleVar(value=16.0)
+        T(ttk.Scale(tune, from_=24, to=10, variable=self.sens_var),
+          "Left: only acts on loud, obvious howls.\nRight: catches feedback earlier, but may also catch steady notes.\nThe middle (16) suits most rooms.").grid(row=1, column=0, sticky="we", pady=(0, 8))
+        ttk.Label(tune, text="Ignore anything quieter than (dBFS)").grid(row=2, column=0, sticky="w")
+        self.floor_var = tk.IntVar(value=-50)
+        T(ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6),
+          "Steady tones quieter than this are ignored. Hum and room tone usually sit below -50 dBFS.").grid(row=3, column=0, sticky="w")
+        tune.columnconfigure(0, weight=1)
 
-        rows = ttk.LabelFrame(top, text="Channels to watch (each input channel corrects its own desk target)")
-        rows.pack(fill="x", **pad)
+        # ---- channels card
+        c4, rows = self._card(tab, "3  Channels to watch",
+                              "Each row listens to one input channel and cuts feedback on its own desk channel or mix.")
+        c4.pack(fill="x", pady=(10, 0))
         ed = ttk.Frame(rows)
         ed.pack(fill="x")
-        ttk.Label(ed, text="Input ch").pack(side="left", padx=(6, 2))
+        ttk.Label(ed, text="Input ch").pack(side="left")
         self.chan_var = tk.IntVar(value=1)
-        ttk.Spinbox(ed, from_=1, to=64, textvariable=self.chan_var, width=4).pack(side="left")
-        ttk.Label(ed, text="Target").pack(side="left", padx=(10, 2))
+        T(ttk.Spinbox(ed, from_=1, to=64, textvariable=self.chan_var, width=4),
+          "Which channel of the audio input to listen to (1 = first USB/Dante channel).").pack(side="left", padx=(4, 14))
+        ttk.Label(ed, text="Desk target").pack(side="left")
         self.target_var = tk.StringVar(value="Ip1")
-        ttk.Entry(ed, textvariable=self.target_var, width=9).pack(side="left")
-        ttk.Label(ed, text="PEQ bands").pack(side="left", padx=(10, 2))
+        T(ttk.Entry(ed, textvariable=self.target_var, width=9),
+          "Which desk channel gets the cuts.\nQu: Ip1-Ip32, ST1-ST3, Mix1-Mix4, LR.\nDM7: InCh:0, Mix:3, Mtrx:1 (counting from 0).").pack(side="left", padx=(4, 14))
+        ttk.Label(ed, text="PEQ bands").pack(side="left")
         self.bands_var = tk.StringVar(value="2,3")
-        ttk.Entry(ed, textvariable=self.bands_var, width=8).pack(side="left")
-        ttk.Button(ed, text="Add / update", command=self.add_row).pack(side="left", padx=6)
-        ttk.Button(ed, text="Remove", command=self.remove_row).pack(side="left")
-        ttk.Label(rows, text="Target: Qu Ip1 / ST1 / Mix1 / LR, DM7 InCh:0 / Mix:3 (0-based).  "
-                             "PEQ bands 1-4 as on the desk: 1=LF 2=LM 3=HM 4=HF (GEQ mode ignores bands).",
-                  foreground="#666").pack(fill="x", padx=6)
-        self.rows_tv = ttk.Treeview(rows, columns=("chan", "target", "bands", "level", "cuts"),
-                                    show="headings", height=4)
-        for col, title, w in (("chan", "Input ch", 70), ("target", "Target", 90), ("bands", "PEQ bands", 90),
-                              ("level", "Level", 80), ("cuts", "Cuts on the desk", 420)):
+        T(ttk.Entry(ed, textvariable=self.bands_var, width=8),
+          "Which parametric EQ bands the app may use, numbered as on the desk:\n1 = LF, 2 = LM, 3 = HM, 4 = HF.\n"
+          "2,3 leaves your low and high shelves alone. Ignored in GEQ mode.").pack(side="left", padx=(4, 14))
+        T(ttk.Button(ed, text="Add / update", style="Accent.TButton", command=self.add_row),
+          "Add this row, or update the row with the same desk target.").pack(side="left")
+        T(ttk.Button(ed, text="Remove", command=self.remove_row),
+          "Remove the selected row.").pack(side="left", padx=(6, 0))
+        self.rows_tv = ttk.Treeview(rows, columns=("chan", "target", "bands", "level", "cuts"), show="headings", height=4)
+        for col, title, w in (("chan", "Input ch", 80), ("target", "Desk target", 100), ("bands", "PEQ bands", 90),
+                              ("level", "Level", 90), ("cuts", "Cuts on the desk", 460)):
             self.rows_tv.heading(col, text=title)
             self.rows_tv.column(col, width=w, anchor="w")
-        self.rows_tv.pack(fill="x", padx=6, pady=4)
+        self.rows_tv.pack(fill="x", pady=(8, 0))
+        T(self.rows_tv, "The channels being watched. Level shows the live input level; "
+                        "Cuts shows every EQ cut the app has made. Click a row to edit it.")
         self.rows_tv.bind("<<TreeviewSelect>>", lambda e: self._edit_selected())
-        self.rows = []  # [{"chan": 1, "target": "Ip1", "bands": "2,3"}]
+        self.rows = []
 
-        tune = ttk.LabelFrame(top, text="Detection")
-        tune.pack(fill="x", **pad)
-        ttk.Label(tune, text="Sensitivity").grid(row=0, column=0, **pad)
-        self.sens_var = tk.DoubleVar(value=16.0)
-        ttk.Scale(tune, from_=24, to=10, variable=self.sens_var, length=200).grid(row=0, column=1, **pad)
-        ttk.Label(tune, text="(left = only obvious howls; right = earlier)", foreground="#666").grid(row=0, column=2, sticky="w")
-        ttk.Label(tune, text="Ignore below (dBFS)").grid(row=0, column=3, **pad)
-        self.floor_var = tk.IntVar(value=-50)
-        ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6).grid(row=0, column=4, sticky="w", **pad)
-
-        btns = ttk.Frame(tab)
-        btns.pack(fill="x", **pad)
-        self.start_btn = ttk.Button(btns, text="Start", command=self.toggle)
-        self.start_btn.pack(side="left", **pad)
+        # ---- action bar
+        bar = ttk.Frame(tab)
+        bar.pack(fill="x", pady=12)
+        self.start_btn = T(ttk.Button(bar, text="Start", style="Accent.TButton", command=self.toggle, width=12),
+                           "Start listening and cutting feedback on every row. Press again to stop.\n"
+                           "Cuts are saved when you stop.")
+        self.start_btn.pack(side="left", ipady=6)
         self.freeze_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(btns, text="Freeze (keep listening, change nothing)", variable=self.freeze_var,
-                        command=self._apply_freeze).pack(side="left", **pad)
-        ttk.Button(btns, text="Clear notches", command=self.clear).pack(side="left", **pad)
-        ttk.Button(btns, text="Run simulation", command=self.simulate).pack(side="right", **pad)
+        T(ttk.Checkbutton(bar, text="Freeze", variable=self.freeze_var, style="Switch.TCheckbutton",
+                          command=self._apply_freeze),
+          "Keep listening and logging, but stop making new cuts. Handy during the show once the room is rung out.").pack(side="left", padx=16)
+        T(ttk.Button(bar, text="Clear cuts", command=self.clear),
+          "Set every cut the app made back to flat on the desk.").pack(side="left")
+        T(ttk.Button(bar, text="Try a simulation", command=self.simulate),
+          "Runs a pretend room that howls at 2 kHz, so you can see the app work without a desk.").pack(side="right")
 
-        ro = ttk.LabelFrame(tab, text="Ring out: raise a fader slowly and cut each frequency that rings (press Start first)")
-        ro.pack(fill="x", **pad)
-        ttk.Label(ro, text="Fader of").grid(row=0, column=0, sticky="e", **pad)
-        self.ro_target = tk.StringVar()
-        self.ro_box = ttk.Combobox(ro, textvariable=self.ro_target, state="readonly", width=10)
-        self.ro_box.grid(row=0, column=1, sticky="w", **pad)
-        self.ro_vars = {}
-        for i, (key, label, default) in enumerate((("start_db", "Start dB", -30.0), ("max_db", "Max dB", 0.0),
-                                                   ("step_db", "Step dB", 1.0), ("step_s", "Every s", 2.0),
-                                                   ("backoff_db", "Back off dB", 4.0), ("guard_dbfs", "Stop above dBFS", -3.0))):
-            ttk.Label(ro, text=label).grid(row=0, column=2 + 2 * i, sticky="e", padx=(8, 2))
-            v = tk.DoubleVar(value=default)
-            ttk.Entry(ro, textvariable=v, width=6).grid(row=0, column=3 + 2 * i, sticky="w")
-            self.ro_vars[key] = v
-        self.ro_btn = ttk.Button(ro, text="Start ring-out", command=self.toggle_ringout)
-        self.ro_btn.grid(row=1, column=0, columnspan=2, sticky="w", **pad)
-        self.ro_status = ttk.Label(ro, text="Idle. The fader never goes above Max, backs off on every howl, "
-                                            "and Stop puts it back to the start level.", foreground="#666")
-        self.ro_status.grid(row=1, column=2, columnspan=12, sticky="w", **pad)
-        self.ringout = None
-        self.ro_row = None
-
-        lf = ttk.LabelFrame(tab, text="Log")
-        lf.pack(fill="both", expand=True, **pad)
-        self.log_txt = tk.Text(lf, height=8, wrap="none", font=("Consolas", 9), state="disabled")
+        # ---- activity log
+        c5, lf = self._card(tab, "Activity")
+        c5.pack(fill="both", expand=True)
+        self.log_txt = tk.Text(lf, height=7, wrap="none", font=("Cascadia Mono", 9), state="disabled",
+                               relief="flat", borderwidth=0, padx=8, pady=6)
         sb = ttk.Scrollbar(lf, command=self.log_txt.yview)
         self.log_txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y")
         self.log_txt.pack(fill="both", expand=True)
 
-        self.status = ttk.Label(tab, text="Stopped", anchor="w")
-        self.status.pack(fill="x", padx=8, pady=(0, 6))
+        self._build_ringout(rotab)
+
+        # ---- status bar
+        sbar = ttk.Frame(root, padding=(16, 6))
+        sbar.pack(fill="x")
+        self.status = ttk.Label(sbar, text="Stopped", style="Muted.TLabel")
+        self.status.pack(side="left")
+        ttk.Label(sbar, text="Hover over anything for help", style="Muted.TLabel").pack(side="right")
+        self._text_widgets = [self.log_txt, self.tool_out]
+        self._apply_text_colours()
+
+    def _build_ringout(self, tab):
+        T = self._tip
+        c, body = self._card(tab, "Ring out a channel",
+                             "The app raises a fader a little at a time. Whenever something starts to ring it pulls the fader "
+                             "back, cuts that frequency, waits, and carries on, until it reaches your maximum. "
+                             "Press Start on the first tab before you begin.")
+        c.pack(fill="x")
+        ttk.Label(body, text="Fader to ride").grid(row=0, column=0, sticky="w")
+        self.ro_target = tk.StringVar()
+        self.ro_box = T(ttk.Combobox(body, textvariable=self.ro_target, state="readonly", width=12),
+                        "Which watched channel's fader to bring up. Its cuts go on the same channel.\n"
+                        "For a wedge, choose its mix (e.g. Mix1) so the mix master is raised.")
+        self.ro_box.grid(row=1, column=0, sticky="w", padx=(0, 18))
+        self.ro_vars = {}
+        fields = (("start_db", "Start at (dB)", -30.0, "The fader is set here first. A safe low level."),
+                  ("max_db", "Never above (dB)", 0.0, "The highest the fader will ever go. Capped at +10 dB."),
+                  ("step_db", "Step (dB)", 1.0, "How much the fader rises each step. Up to 3 dB."),
+                  ("step_s", "Every (s)", 2.0, "How long to wait between steps, so feedback has time to show."),
+                  ("backoff_db", "Back off (dB)", 4.0, "How far the fader drops straight away when something rings."),
+                  ("guard_dbfs", "Emergency stop above (dBFS)", -3.0,
+                   "If the input ever gets this loud, the fader drops 10 dB and ring-out stops."))
+        for i, (key, label, default, tip) in enumerate(fields, start=1):
+            ttk.Label(body, text=label).grid(row=0, column=i, sticky="w", padx=(0, 14))
+            v = tk.DoubleVar(value=default)
+            T(ttk.Spinbox(body, textvariable=v, from_=-90, to=10, increment=0.5, width=7), tip).grid(
+                row=1, column=i, sticky="w", padx=(0, 14))
+            self.ro_vars[key] = v
+
+        act = ttk.Frame(tab)
+        act.pack(fill="x", pady=16)
+        self.ro_btn = T(ttk.Button(act, text="Start ring-out", style="Accent.TButton", command=self.toggle_ringout, width=16),
+                        "Begin raising the fader. Press again (STOP) at any time: the fader goes back to the start level.")
+        self.ro_btn.pack(side="left", ipady=6)
+        self.ro_level = ttk.Progressbar(act, maximum=100, length=360)
+        self.ro_level.pack(side="left", padx=16)
+        T(self.ro_level, "Where the fader is between the start level and the maximum.")
+        self.ro_status = ttk.Label(tab, text="Idle. The fader never goes above your maximum, backs off on every howl, "
+                                             "and STOP puts it back to the start level.", style="Muted.TLabel",
+                                   wraplength=900, justify="left")
+        self.ro_status.pack(anchor="w")
+        self.ringout = None
+        self.ro_row = None
+
+    # ------------------------------------------------------------- theme
+    def toggle_theme(self):
+        try:
+            import sv_ttk
+            dark = sv_ttk.get_theme() == "dark"
+            sv_ttk.set_theme("light" if dark else "dark")
+            self.theme_btn.configure(text="Dark mode" if dark else "Light mode")
+        except Exception:
+            return
+        self._apply_text_colours()
+
+    def _apply_text_colours(self):
+        try:
+            import sv_ttk
+            dark = sv_ttk.get_theme() == "dark"
+        except Exception:
+            dark = False
+        bg, fg = ("#1f1f1f", "#e4e4e4") if dark else ("#fafafa", "#1b1b1b")
+        for w in getattr(self, "_text_widgets", []):
+            w.configure(bg=bg, fg=fg, insertbackground=fg)
+
+    def _update_pill(self, live=None):
+        if live is None:
+            live = self.running and self.apply_var.get() and DESKS.get(self.desk_var.get()) != "dry"
+        if live:
+            self.mode_pill.configure(text="  LIVE: WRITING TO DESK  ", bg="#c42b1c")
+        elif self.apply_var.get() and DESKS.get(self.desk_var.get()) != "dry":
+            self.mode_pill.configure(text="  ARMED: WILL WRITE ON START  ", bg="#9d5d00")
+        else:
+            self.mode_pill.configure(text="  DRY RUN  ", bg="#3a3a3a")
 
     def log(self, text):
         self.log_txt.configure(state="normal")
@@ -244,7 +423,10 @@ class App:
             txt = f"{self.ro_row['target']} fader {self.ringout.level:+.1f} dB ({state})"
             if self.ringout.result:
                 txt = self.ringout.result
-            self.ro_status.configure(text=txt, foreground="#000")
+            self.ro_status.configure(text=txt)
+            c = self.ringout.cfg
+            span = max(0.1, c.max_db - c.start_db)
+            self.ro_level["value"] = max(0, min(100, 100 * (self.ringout.level - c.start_db) / span))
             if not self.ringout.running:
                 self.ro_btn.configure(text="Start ring-out")
 
@@ -356,8 +538,10 @@ class App:
             messagebox.showerror(APP, f"Could not start: {e}")
             return
         self.start_btn.configure(text="Stop")
+        self.running = True
         self.status.configure(text=f"Listening at {sr} Hz on {len(self.rows)} channel(s) -> {self.desk_var.get()}"
                                    f"{'  (WRITING TO DESK)' if apply else '  (dry run)'}")
+        self._update_pill()
         self.log("Started: " + ", ".join(f"in {r['chan']} -> {r['target']}" for r in self.rows))
         self._save_settings()
 
@@ -411,6 +595,7 @@ class App:
             self.desk = None
         self.start_btn.configure(text="Start")
         self.status.configure(text="Stopped")
+        self._update_pill()
 
     def clear(self):
         if not self.running:
@@ -460,6 +645,7 @@ class App:
             self.ringout = None
             return
         self.ro_btn.configure(text="STOP ring-out")
+        self.ro_status.configure(text=f"Riding the {row['target']} fader...")
 
     def simulate(self):
         self.log("Simulating a room that howls at 2 kHz, with speech, for 8 s...")
@@ -506,33 +692,43 @@ class App:
     ]
 
     def _build_tools(self, tab):
-        pad = {"padx": 6, "pady": 4}
-        f = ttk.Frame(tab)
-        f.pack(fill="x", **pad)
-        ttk.Label(f, text="Desk IP").grid(row=0, column=0, sticky="e", **pad)
+        T = self._tip
+        card, f = self._card(tab, "Run a desk tool",
+                             "Quick checks and probes for the Qu-16 and DM7. Pick a tool, check the command, then press Run.")
+        card.pack(fill="x", padx=12, pady=(12, 6))
+        ttk.Label(f, text="Desk IP").grid(row=0, column=0, sticky="e", padx=6, pady=4)
         self.tool_host = tk.StringVar()
-        ttk.Entry(f, textvariable=self.tool_host, width=18).grid(row=0, column=1, sticky="w", **pad)
+        T(ttk.Entry(f, textvariable=self.tool_host, width=18),
+          "The desk's IP address. If you leave it empty, the IP from the Feedback tab is used.").grid(
+            row=0, column=1, sticky="w", padx=6, pady=4)
         self.tool_host.trace_add("write", lambda *_: self._fill_tool())
-        ttk.Label(f, text="Tool").grid(row=1, column=0, sticky="e", **pad)
+        ttk.Label(f, text="Tool").grid(row=1, column=0, sticky="e", padx=6, pady=4)
         self.tool_pick = tk.StringVar(value=self.TOOL_CMDS[0][0])
-        box = ttk.Combobox(f, textvariable=self.tool_pick, values=[t[0] for t in self.TOOL_CMDS],
-                           state="readonly", width=55)
-        box.grid(row=1, column=1, columnspan=3, sticky="w", **pad)
+        box = T(ttk.Combobox(f, textvariable=self.tool_pick, values=[t[0] for t in self.TOOL_CMDS],
+                             state="readonly", width=60),
+                "Pick what you want to do. The command box below fills in for you.")
+        box.grid(row=1, column=1, columnspan=3, sticky="we", padx=6, pady=4)
         box.bind("<<ComboboxSelected>>", lambda e: self._fill_tool())
-        ttk.Label(f, text="Command").grid(row=2, column=0, sticky="e", **pad)
+        ttk.Label(f, text="Command").grid(row=2, column=0, sticky="e", padx=6, pady=4)
         self.tool_cmd = tk.StringVar()
-        ttk.Entry(f, textvariable=self.tool_cmd, width=80).grid(row=2, column=1, columnspan=3, sticky="we", **pad)
+        T(ttk.Entry(f, textvariable=self.tool_cmd, width=80),
+          "The exact command that will run. You can edit it. Nothing is written to a desk unless the command has --apply or is a DM7 'set'.").grid(
+            row=2, column=1, columnspan=3, sticky="we", padx=6, pady=4)
         f.columnconfigure(3, weight=1)
         b = ttk.Frame(tab)
-        b.pack(fill="x", **pad)
-        self.tool_btn = ttk.Button(b, text="Run", command=self.run_tool)
-        self.tool_btn.pack(side="left", **pad)
-        ttk.Button(b, text="Stop", command=self.stop_tool).pack(side="left", **pad)
-        ttk.Button(b, text="Open logs folder", command=lambda: os.startfile(self._logs_dir())
-                   if hasattr(os, "startfile") else None).pack(side="left", **pad)
-        ttk.Label(b, text="Raw logs from each run are saved in the logs folder.", foreground="#666").pack(side="left", **pad)
-        self.tool_out = tk.Text(tab, wrap="none", font=("Consolas", 9), state="disabled")
-        self.tool_out.pack(fill="both", expand=True, **pad)
+        b.pack(fill="x", padx=12, pady=4)
+        self.tool_btn = T(ttk.Button(b, text="Run", style="Accent.TButton", width=10, command=self.run_tool),
+                          "Run the command. Its output appears below and is also saved to the logs folder.")
+        self.tool_btn.pack(side="left", padx=(0, 6))
+        T(ttk.Button(b, text="Stop", command=self.stop_tool), "Stop the tool that's running.").pack(side="left", padx=6)
+        T(ttk.Button(b, text="Open logs folder", command=lambda: os.startfile(self._logs_dir())
+                     if hasattr(os, "startfile") else None),
+          "Open the folder with a text file of every run, handy for sending to someone.").pack(side="left", padx=6)
+        out = ttk.LabelFrame(tab, text="  Output  ", padding=(8, 6))
+        out.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        self.tool_out = tk.Text(out, wrap="none", font=("Consolas", 10), state="disabled", relief="flat",
+                                borderwidth=0, padx=8, pady=6)
+        self.tool_out.pack(fill="both", expand=True)
         self.tool_proc = None
         self.tool_file = None
         self._fill_tool()
@@ -735,6 +931,7 @@ def smoke_drive(root):
     for k, v in (("start_db", -20), ("max_db", -15), ("step_s", 0.5)):
         app.ro_vars[k].set(v)
     root.after(500, app.toggle_ringout)
+    root.after(4500, lambda: app.nb.select(1))  # CI takes screenshots at ~3 s and ~5.5 s
     root.after(7000, app.stop)
     return app
 
@@ -762,6 +959,13 @@ def main():
                         if w not in text]
             if "error:" in text:
                 problems.append("an error was logged")
+            if getattr(sys, "frozen", False):
+                try:
+                    import sv_ttk
+                    if sv_ttk.get_theme() not in ("dark", "light"):
+                        problems.append("theme not loaded")
+                except Exception as e:
+                    problems.append(f"theme missing: {e}")
             with open(out, "w") as f:
                 f.write("OK" if not problems else "FAIL: " + "; ".join(problems) + "\n" + text)
             root.destroy()
