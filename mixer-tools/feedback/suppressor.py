@@ -27,7 +27,7 @@ class Suppressor:
                 self.log(f"[howl] {ev.freq_hz:7.1f} Hz {ev.level_db:6.1f} dBFS (frozen, no change)")
                 self.detector.forget(ev.freq_hz)
                 continue
-            action, notch = self.manager.handle(ev.freq_hz)
+            action, notch = self.manager.handle(ev.freq_hz, self.severity(ev))
             msg = (f"[howl] {ev.freq_hz:7.1f} Hz {ev.level_db:6.1f} dBFS  PAPR {ev.papr_db:4.1f}  "
                    f"PNPR {ev.pnpr_db:4.1f}  PHPR {ev.phpr_db:4.1f}  -> {action}")
             if notch is not None:
@@ -39,6 +39,13 @@ class Suppressor:
                 self.detector.forget(ev.freq_hz)
             if self.on_event:
                 self.on_event(action, ev)
+
+    def severity(self, ev):
+        """Extra cut depth in dB (0-6) for a worse howl: one that stands further out of the
+        spectrum than the detection threshold, or is already loud."""
+        over = 0.5 * max(0.0, ev.papr_db - self.detector.cfg.papr_db)
+        loud = 0.25 * max(0.0, ev.level_db + 30.0)
+        return min(6.0, round(over + loud, 1))
 
     def clear(self):
         for n in self.manager.clear():

@@ -83,6 +83,15 @@ class NotchTests(unittest.TestCase):
         self.assertEqual(m.handle(3000.0)[0], "new")
         self.assertEqual(m.handle(8000.0), ("full", None))
 
+    def test_worse_howls_get_deeper_cuts(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[1, 2, 3]), clock=lambda: now[0])
+        self.assertEqual(m.handle(500.0)[1].gain_db, -6.0)
+        self.assertEqual(m.handle(2000.0, severity_db=4)[1].gain_db, -10.0)
+        self.assertEqual(m.handle(6000.0, severity_db=20)[1].gain_db, -12.0)   # never past the maximum
+        now[0] = 1
+        self.assertEqual(m.handle(2000.0, severity_db=2)[1].gain_db, -12.0)    # -10 - 3 - 1, capped
+
     def test_nearby_howl_widens_instead_of_moving_or_taking_a_band(self):
         now = [0.0]
         m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])

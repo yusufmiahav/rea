@@ -82,7 +82,7 @@ class NotchManager:
                 best = (d, n)
         return best[1] if best else None
 
-    def _reshape(self, n: Notch, freq_hz: float, now: float):
+    def _reshape(self, n: Notch, freq_hz: float, now: float, extra: float = 0.0):
         c = self.cfg
         if now - n.changed_at < c.cooldown_s:
             return "cooldown", n
@@ -91,35 +91,40 @@ class NotchManager:
         if abs(math.log2(freq_hz / n.freq_hz)) <= c.lock_oct or span <= c.lock_oct:
             if n.gain_db <= c.max_depth_db and n.width_oct >= c.max_width_oct:
                 return "max", n
-            n.gain_db = max(c.max_depth_db, n.gain_db + c.step_db)
+            n.gain_db = max(c.max_depth_db, n.gain_db + c.step_db - extra / 2)
             n.width_oct = min(c.max_width_oct, n.width_oct * c.widen_step)
             action = "deeper"
         else:
             # Centre the bell between the lowest and highest howl and make it wide enough for both.
             n.freq_hz = math.sqrt(n.lo_hz * n.hi_hz)
             n.width_oct = min(c.max_width_oct, max(n.width_oct, span + c.width_oct))
-            n.gain_db = max(c.max_depth_db, n.gain_db + c.step_db / 2)
+            n.gain_db = max(c.max_depth_db, n.gain_db + (c.step_db - extra / 2) / 2)
             action = "wider"
         n.hits += 1
         n.changed_at = now
         return action, n
 
-    def handle(self, freq_hz: float):
-        """Returns (action, Notch). action is "new", "deeper", "wider", "max", "cooldown" or "full"
+    def _start_depth(self, severity_db):
+        return max(self.cfg.max_depth_db, self.cfg.start_depth_db - max(0.0, severity_db))
+
+    def handle(self, freq_hz: float, severity_db: float = 0.0):
+        """severity_db (0 or more) makes a worse howl get a deeper cut: a new cut starts that much
+        deeper and a repeat ring deepens by half of it extra, never past max_depth_db.
+        Returns (action, Notch). action is "new", "deeper", "wider", "max", "cooldown" or "full"
         (Notch is None for "full")."""
         now = self.clock()
         c = self.cfg
         near = self._nearest(freq_hz, c.merge_oct)
         if near is not None:
-            return self._reshape(near, freq_hz, now)
+            return self._reshape(near, freq_hz, now, severity_db)
         free = self.free_bands()
         if free:
-            n = Notch(band=free[0], freq_hz=freq_hz, gain_db=c.start_depth_db, width_oct=c.width_oct, changed_at=now)
+            n = Notch(band=free[0], freq_hz=freq_hz, gain_db=self._start_depth(severity_db), width_oct=c.width_oct, changed_at=now)
             self.notches[n.band] = n
             return "new", n
         near = self._nearest(freq_hz, c.spill_oct)
         if near is not None:
-            return self._reshape(near, freq_hz, now)
+            return self._reshape(near, freq_hz, now, severity_db)
         return "full", None
 
     def clear(self, band=None):
@@ -150,18 +155,18 @@ class GeqManager(NotchManager):
         self.max_faders = max_faders or len(self.freqs)
         self.cfg.merge_oct = min(self.cfg.merge_oct, 1 / 6)
 
-    def handle(self, freq_hz: float):
+    def handle(self, freq_hz: float, severity_db: float = 0.0):
         now = self.clock()
         c = self.cfg
         near = self._nearest(freq_hz, c.merge_oct)
         if near is not None:
-            return self._reshape(near, freq_hz, now)
+            return self._reshape(near, freq_hz, now, severity_db)
         if len(self.notches) >= self.max_faders:
             return "full", None
         idx = min(range(len(self.freqs)), key=lambda i: abs(math.log2(freq_hz / self.freqs[i])))
         if idx + 1 in self.notches:  # same fader, but outside merge range: can't happen with merge >= 1/3
-            return self._reshape(self.notches[idx + 1], freq_hz, now)
-        n = Notch(band=idx + 1, freq_hz=freq_hz, gain_db=c.start_depth_db,
+            return self._reshape(self.notches[idx + 1], freq_hz, now, severity_db)
+        n = Notch(band=idx + 1, freq_hz=freq_hz, gain_db=self._start_depth(severity_db),
                   width_oct=max(c.width_oct, 1 / 3), changed_at=now)
         self.notches[n.band] = n
         return "new", n

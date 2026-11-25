@@ -58,7 +58,8 @@ Every ~21 ms it takes an 8192-point FFT and checks each strong peak against all 
 
 When a peak passes every test, the notch manager acts on it:
 
-1. A new frequency gets a free EQ band as a bell cut of −6 dB, 1/6 octave wide.
+1. A new frequency gets a free EQ band as a bell cut 1/6 octave wide. It starts at −6 dB, or up to
+   6 dB deeper for a worse howl (one that stands further out of the spectrum or is already loud).
 2. Once a band has a frequency it stays there. If that frequency rings again, the bell goes 3 dB
    deeper and 25% wider, up to one octave, so it becomes a smooth curve rather than a pin-prick.
 3. If a howl rings within 1/3 octave of an existing cut, that same bell is re-centred between the two
