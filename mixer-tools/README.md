@@ -90,6 +90,14 @@ The **Meters** tab shows the peak level of every channel on the audio input (Qu-
 L/R; DM7: Dante channels), up to 64, with peak hold and a clip light. Watched channels are outlined, and
 their name turns red when feedback is found. "Start meters" shows them without running the suppressor.
 
+The **Desk control** tab is a manual mixer page for one channel or mix at a time: fader, mute, on L+R,
+pan, preamp gain and 48V (Qu inputs), HPF, the four PEQ bands, and sends. For an input it shows the
+sends to every mix; for a mix it shows every input's send into it (handy for monitor mixes). "Flatten
+EQ" sets every PEQ gain to 0 dB and, on a Qu mix or LR, every GEQ fader to 0 dB, after asking. "Read
+from desk" moves the controls to the desk's current settings (Qu). Connect uses the IP and "Write to the
+desk" from the Feedback tab, and shares the suppressor's connection while it runs. DM7 pan, mute and
+send addresses are assumed from Yamaha's RCP naming; DM7 preamp gain and 48V are not offered.
+
 **Response** (Detection card, or `--speed`) sets how quickly a howl is acted on: `normal` waits 0.5 s,
 `fast` about 0.25 s and `very fast` about 0.1 s. The faster modes are also more sensitive (3–5 dB lower
 threshold, shorter analysis window) and deepen a cut sooner. In tests a growing howl was caught about

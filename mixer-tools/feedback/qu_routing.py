@@ -32,6 +32,7 @@ class NrpnParser:
     def __init__(self):
         self.params = {}        # (ch, id, vx) -> va
         self.vx_seen = {}       # id -> set of vx values the desk used
+        self.mutes = {}         # channel code -> True when muted (note on messages)
         self._status = None
         self._data = []
         self._in_sysex = False
@@ -57,6 +58,8 @@ class NrpnParser:
             if len(self._data) == 2:
                 if self._status & 0xF0 == 0xB0:
                     self._cc(self._status & 0x0F, *self._data)
+                elif self._status & 0xF0 == 0x90 and self._data[1] > 0:
+                    self.mutes[self._data[0]] = self._data[1] >= 0x40
                 self._data = []              # running status: keep _status
 
     def _cc(self, midi_ch, cc, val):

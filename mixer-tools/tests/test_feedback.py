@@ -389,6 +389,36 @@ class SpeedTests(unittest.TestCase):
         self.assertEqual(hits, 0)
 
 
+class ControlTests(unittest.TestCase):
+    def test_qu_control_bytes(self):
+        from feedback.control import QuControl, qu_gain_value
+        out = []
+        c = QuControl(QuDesk(None, "Ip1", log=out.append))
+        c.fader("Ip3", 0.0)
+        c.mute("Mix1", True)
+        c.pan("Ip2", 0.0)
+        c.send("Ip4", "Mix5-6", True, 0.0, post=True)
+        c.geq_flat("LR")
+        self.assertIn("B0 63 22 B0 62 17 B0 06 62 B0 26 07", out[0])
+        self.assertIn("90 60 7F 90 60 00", out[1])
+        self.assertIn("B0 63 21 B0 62 16 B0 06 25 B0 26 07", out[2])
+        self.assertIn("B0 63 23 B0 62 55 B0 06 01 B0 26 04", out[3])
+        self.assertIn("B0 63 23 B0 62 50 B0 06 00 B0 26 04", out[3])
+        self.assertEqual(out[4].count("B0 62 70"), 28)
+        self.assertEqual((qu_gain_value(-5), qu_gain_value(0), qu_gain_value(60)), (0x00, 0x0A, 0x7F))
+
+    def test_qu_read_back(self):
+        from feedback.control import QuControl
+        from feedback.qu_routing import NrpnParser
+        d = QuDesk(None, "Ip1", log=lambda *_: None)
+        d.params = NrpnParser()
+        d.params.feed(bytes([0x90, 0x22, 0x7F, 0x90, 0x22, 0x00, 0xB0, 0x63, 0x22, 0xB0, 0x62, 0x17,
+                             0xB0, 0x06, 0x62, 0xB0, 0x26, 0x07]))
+        got = QuControl(d).read("Ip3")
+        self.assertEqual(got["fader"], 0.0)
+        self.assertTrue(got["mute"])
+
+
 class SplitTests(unittest.TestCase):
     def _split(self):
         from feedback.desks import QU_GEQ_FREQS
