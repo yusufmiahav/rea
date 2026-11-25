@@ -53,29 +53,34 @@ Every ~21 ms it takes an 8192-point FFT and checks each strong peak against all 
 | Peak-to-average power ratio ≥ 16 dB | A howl stands far above the rest of the spectrum |
 | Peak-to-neighbour ratio ≥ 12 dB | A howl is one sharp line, not a broad formant |
 | Peak-to-harmonic ratio ≥ 15 dB (2nd, 3rd and sub-harmonic) | A howl is close to a pure sine. Voices and instruments have harmonics |
-| Holds for ≥ 0.3 s and drifts ≤ ±3 Hz | Speech moves, and vibrato wobbles |
-| Level not falling faster than 6 dB/s | A struck note decays, while feedback holds or grows |
+| Holds for ≥ 0.5 s and drifts ≤ ±3 Hz | Speech moves, and vibrato wobbles |
+| Level holding or growing (not falling faster than 2 dB/s) | A struck note decays, while feedback holds or grows |
 
 When a peak passes every test, the notch manager acts on it:
 
-1. A new frequency gets a free EQ band as a bell cut 1/6 octave wide. It starts at −6 dB, or up to
-   6 dB deeper for a worse howl (one that stands further out of the spectrum or is already loud).
-2. Once a band has a frequency it stays there. If that frequency rings again, the bell goes 3 dB
-   deeper and 25% wider, up to one octave, so it becomes a smooth curve rather than a pin-prick.
-3. If a howl rings within 1/3 octave of an existing cut, that same bell is re-centred between the two
+1. A new frequency gets a free EQ band as a gentle bell cut 1/6 octave wide. It starts at −4 dB, or up
+   to 3 dB deeper for a worse howl (one that stands further out of the spectrum or is already loud).
+2. Once a band has a frequency it stays there. If that frequency rings again (and at least 1.5 s has
+   passed since the last change), the bell goes 2 dB deeper and a little wider, up to half an octave.
+3. **Recovery:** once a cut's frequency has been quiet for 8 s, the cut eases back 1 dB every 2 s until
+   it's flat and the band is free again. If it rings again on the way up, it drops 1 dB below where it
+   rang and never comes back up past that point.
+4. **Total cap:** one channel can carry at most 18 dB of cut across all its bands (24 dB on a GEQ). Past
+   that, the app reports `budget` and cuts nothing more.
+5. If a howl rings within 1/3 octave of an existing cut, that same bell is re-centred between the two
    and widened to cover both. It doesn't take another band.
-4. When every band is in use, a howl within 2/3 octave of a cut widens that cut. Anything further
+6. When every band is in use, a howl within 2/3 octave of a cut widens that cut. Anything further
    away is reported as `full`, and no band is moved.
-5. Rows on the same desk channel share one set of bands, so they can't fight over one.
-6. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve, and
+7. Rows on the same desk channel share one set of bands, so they can't fight over one.
+8. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve, and
    overlapping cuts take the deeper value at each fader.
-7. With the HPF switched on (the app's "HPF up to" switch, or `--hpf-max 160`), a low howl raises the
+9. With the HPF switched on (the app's "HPF up to" switch, or `--hpf-max 160`), a low howl raises the
    input's high-pass filter to half an octave above the howl instead of using a PEQ band. If it rings
    again, the HPF goes up another 1/3 octave, never past the limit. Once the HPF is at the limit, a PEQ
    band takes over. Mixes and LR have no HPF, so this only works on inputs. The Qu HPF uses NRPN `13`
    (frequency, assumed log from 20 Hz to 2 kHz) and `14` (in). On the DM7 it uses `InCh/HPF/Freq` and `On`.
    **Clear cuts** doesn't move the HPF back, because the app can't read where it was before.
-8. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
+10. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
    changes at most once every 0.5 s.
 
 The app's **Analyser (RTA)** tab shows the live spectrum of a watched channel. Peaks that are starting to

@@ -160,13 +160,13 @@ def main():
         p.add_argument("--hpf-max", type=float, default=0.0,
                        help="raise the input's HPF for low howls, up to this many Hz (0 = off; inputs only)")
         p.add_argument("--papr", type=float, default=16.0, help="lower = more sensitive")
-        p.add_argument("--persist", type=float, default=0.30, help="seconds a peak must hold")
+        p.add_argument("--persist", type=float, default=0.50, help="seconds a peak must hold")
         p.add_argument("--floor", type=float, default=-50.0, help="ignore peaks quieter than this (dBFS)")
 
     p = sub.add_parser("simulate"); p.add_argument("--seconds", type=float, default=8)
     p.add_argument("--freq", type=float, default=2000.0); p.add_argument("--loop-gain", type=float, default=1.0)
     p = sub.add_parser("analyse"); p.add_argument("file"); p.add_argument("--channel", type=int, default=1)
-    p.add_argument("--papr", type=float, default=16.0); p.add_argument("--persist", type=float, default=0.30)
+    p.add_argument("--papr", type=float, default=16.0); p.add_argument("--persist", type=float, default=0.50)
     sub.add_parser("devices")
     p = sub.add_parser("live"); desk_args(p); tuning(p)
     p.add_argument("--device", help="audio input name or number (see `devices`)")

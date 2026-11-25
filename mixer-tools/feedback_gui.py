@@ -277,6 +277,12 @@ class App:
         T(ttk.Checkbutton(bar, text="Freeze", variable=self.freeze_var, style="Switch.TCheckbutton",
                           command=self._apply_freeze),
           "Keep listening and logging, but stop making new cuts. Handy during the show once the room is rung out.").pack(side="left", padx=16)
+        self.recover_var = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(bar, text="Recover cuts", variable=self.recover_var, style="Switch.TCheckbutton",
+                          command=self._apply_recover),
+          "When a cut frequency has been quiet for 8 seconds, ease the cut back 1 dB every 2 seconds until it's flat\n"
+          "and the band is free again. If it rings again on the way up, it drops back and stays at the depth that worked.\n"
+          "Each channel can have at most 18 dB of cut in total, so the EQ stays gentle.").pack(side="left", padx=(0, 16))
         T(ttk.Button(bar, text="Clear cuts", command=self.clear),
           "Set every cut the app made back to flat on the desk.").pack(side="left")
         T(ttk.Button(bar, text="Try a simulation", command=self.simulate),
@@ -673,7 +679,9 @@ class App:
                     views[key] = self.desk.view(r["target"])
                     use_hpf = self.hpf_var.get() and getattr(views[key], "has_hpf", False) and kind != "qu-geq"
                     ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind],
-                                       hpf_max_hz=float(self.hpfmax_var.get()) if use_hpf else 0.0)
+                                       hpf_max_hz=float(self.hpfmax_var.get()) if use_hpf else 0.0,
+                                       release_after_s=8.0 if self.recover_var.get() else 0.0,
+                                       total_cut_db=24.0 if kind == "qu-geq" else 18.0)
                     managers[key] = (GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq"
                                      else NotchManager(ncfg))
                 r["desk"], manager = views[key], managers[key]
@@ -782,6 +790,11 @@ class App:
             r["sup"].clear()
         self.log("Cleared all cuts")
         self._show_notches()
+
+    def _apply_recover(self):
+        for r in self.rows:
+            if "sup" in r:
+                r["sup"].manager.cfg.release_after_s = 8.0 if self.recover_var.get() else 0.0
 
     def _apply_freeze(self):
         for r in self.rows:
@@ -991,7 +1004,7 @@ class App:
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
-                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax")}
+                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax", "recover")}
         data["rows"] = [{k: r[k] for k in ("chan", "target", "bands")} for r in self.rows]
         data["ringout"] = {k: v.get() for k, v in self.ro_vars.items()}
         with open(SETTINGS, "w", encoding="utf-8") as f:

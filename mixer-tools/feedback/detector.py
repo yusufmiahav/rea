@@ -33,9 +33,9 @@ class DetectorConfig:
     pnpr_db: float = 12.0         # peak over neighbours a few bins away
     phpr_db: float = 15.0         # peak over its 2nd/3rd harmonic
     max_peaks: int = 12           # strongest peaks examined per frame
-    persist_s: float = 0.30       # how long a peak must hold before it counts
+    persist_s: float = 0.50       # how long a peak must hold before it counts (speech rarely holds a pitch this long)
     max_drift_hz: float = 3.0     # allowed wobble of the peak's frequency
-    min_slope_db_s: float = -6.0  # a decaying peak (slope below this) is not feedback
+    min_slope_db_s: float = -2.0  # feedback holds or grows; a peak fading faster than this is a voice or a note
     track_tolerance_bins: float = 1.5
     track_timeout_s: float = 0.08 # a track survives this long without its peak
 

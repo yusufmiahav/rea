@@ -37,6 +37,8 @@ class Notch:
     changed_at: float = 0.0
     lo_hz: float = 0.0        # lowest and highest howl this cut covers
     hi_hz: float = 0.0
+    last_ring: float = 0.0    # when this frequency last rang
+    ceiling_db: float = 0.0   # recovery never lifts the cut above this (learned when it rang again)
 
     def __post_init__(self):
         self.lo_hz = self.lo_hz or self.freq_hz
@@ -52,16 +54,20 @@ class Notch:
 @dataclass
 class NotchConfig:
     bands: list = field(default_factory=lambda: [2, 3])  # desk band numbers to use
-    start_depth_db: float = -6.0
-    step_db: float = -3.0
+    start_depth_db: float = -4.0
+    step_db: float = -2.0
     max_depth_db: float = -12.0
     width_oct: float = 1 / 6       # starting width: a visible bell, not a pin-prick
-    widen_step: float = 1.25       # each repeat ring widens the bell by this factor
-    max_width_oct: float = 1.0
+    widen_step: float = 1.15       # each repeat ring widens the bell by this factor
+    max_width_oct: float = 0.5
+    total_cut_db: float = 18.0     # most cut allowed on one channel, all bands added together
+    release_after_s: float = 8.0   # a cut that hasn't rung for this long starts to recover (0 = never)
+    release_every_s: float = 2.0   # ...rising this often
+    release_step_db: float = 1.0   # ...by this much, until it's flat and the band is free again
     merge_oct: float = 1 / 3       # a howl this close to a cut reshapes that cut, never a new band
     spill_oct: float = 2 / 3       # when every band is used, a howl this close widens the nearest cut
     lock_oct: float = 1 / 24       # within this of the centre the band stays put and just deepens
-    cooldown_s: float = 0.5        # ignore re-hits on a cut for this long after a change
+    cooldown_s: float = 1.5        # ignore re-hits on a cut for this long, so a change can take effect
     hpf_max_hz: float = 0.0        # >0: a howl low enough is handled by raising the HPF, up to this
     hpf_margin_oct: float = 0.5    # the HPF goes this far above the howl (12 dB/oct -> about 6-8 dB down)
     hpf_step_oct: float = 1 / 3    # each repeat ring below the HPF raises it this much more
@@ -79,6 +85,38 @@ class NotchManager:
 
     def free_bands(self):
         return [b for b in self.cfg.bands if b not in self.notches]
+
+    def total_cut(self):
+        return -sum(n.gain_db for n in self.notches.values() if n.band != HPF_BAND)
+
+    def _room(self):
+        """dB of cut still allowed on this channel."""
+        return max(0.0, self.cfg.total_cut_db - self.total_cut())
+
+    def tick(self, now=None):
+        """Lets cuts that have stopped ringing recover a little at a time. Returns a list of
+        ("recover", Notch) for a cut that rose, and ("released", Notch) for one that is flat
+        again (its band is free)."""
+        c = self.cfg
+        if c.release_after_s <= 0:
+            return []
+        now = self.clock() if now is None else now
+        out = []
+        for n in list(self.notches.values()):
+            if n.band == HPF_BAND:
+                continue
+            if now - n.last_ring < c.release_after_s or now - n.changed_at < c.release_every_s:
+                continue
+            target = min(n.ceiling_db, n.gain_db + c.release_step_db)
+            if target <= n.gain_db:
+                continue
+            n.gain_db, n.changed_at = target, now
+            if n.gain_db > -0.5:
+                del self.notches[n.band]
+                out.append(("released", n))
+            else:
+                out.append(("recover", n))
+        return out
 
     def _hpf(self, freq_hz, now):
         """Raise the HPF for a low howl. Returns (action, Notch) or None if the HPF can't help."""
@@ -115,28 +153,42 @@ class NotchManager:
 
     def _reshape(self, n: Notch, freq_hz: float, now: float, extra: float = 0.0):
         c = self.cfg
+        recovering = now - n.last_ring >= c.release_after_s > 0
+        n.last_ring = now
+        if recovering:
+            # It rang again while recovering, so this level isn't safe: go back down a step at
+            # once, and never lift it this far again.
+            n.ceiling_db = min(n.ceiling_db, n.gain_db - 1.0)
+            n.gain_db = max(c.max_depth_db, n.ceiling_db)
+            n.hits += 1
+            n.changed_at = now
+            return "deeper", n
         if now - n.changed_at < c.cooldown_s:
             return "cooldown", n
         n.lo_hz, n.hi_hz = min(n.lo_hz, freq_hz), max(n.hi_hz, freq_hz)
         span = math.log2(n.hi_hz / n.lo_hz)
+        room = self._room()
         if abs(math.log2(freq_hz / n.freq_hz)) <= c.lock_oct or span <= c.lock_oct:
             if n.gain_db <= c.max_depth_db and n.width_oct >= c.max_width_oct:
                 return "max", n
-            n.gain_db = max(c.max_depth_db, n.gain_db + c.step_db - extra / 2)
+            if room < 1.0 and n.gain_db > c.max_depth_db:
+                return "budget", n
+            n.gain_db = max(c.max_depth_db, n.gain_db - min(room, -c.step_db + extra / 2))
             n.width_oct = min(c.max_width_oct, n.width_oct * c.widen_step)
             action = "deeper"
         else:
             # Centre the bell between the lowest and highest howl and make it wide enough for both.
             n.freq_hz = math.sqrt(n.lo_hz * n.hi_hz)
             n.width_oct = min(c.max_width_oct, max(n.width_oct, span + c.width_oct))
-            n.gain_db = max(c.max_depth_db, n.gain_db + (c.step_db - extra / 2) / 2)
+            n.gain_db = max(c.max_depth_db, n.gain_db - min(room, (-c.step_db + extra / 2) / 2))
             action = "wider"
         n.hits += 1
         n.changed_at = now
         return action, n
 
     def _start_depth(self, severity_db):
-        return max(self.cfg.max_depth_db, self.cfg.start_depth_db - max(0.0, severity_db))
+        want = max(self.cfg.max_depth_db, self.cfg.start_depth_db - max(0.0, severity_db))
+        return max(want, -self._room())
 
     def handle(self, freq_hz: float, severity_db: float = 0.0):
         """severity_db (0 or more) makes a worse howl get a deeper cut: a new cut starts that much
@@ -152,8 +204,10 @@ class NotchManager:
         if near is not None:
             return self._reshape(near, freq_hz, now, severity_db)
         free = self.free_bands()
+        if free and self._room() < 2.0:
+            return "budget", None
         if free:
-            n = Notch(band=free[0], freq_hz=freq_hz, gain_db=self._start_depth(severity_db), width_oct=c.width_oct, changed_at=now)
+            n = Notch(last_ring=now, band=free[0], freq_hz=freq_hz, gain_db=self._start_depth(severity_db), width_oct=c.width_oct, changed_at=now)
             self.notches[n.band] = n
             return "new", n
         near = self._nearest(freq_hz, c.spill_oct)
@@ -200,7 +254,9 @@ class GeqManager(NotchManager):
         idx = min(range(len(self.freqs)), key=lambda i: abs(math.log2(freq_hz / self.freqs[i])))
         if idx + 1 in self.notches:  # same fader, but outside merge range: can't happen with merge >= 1/3
             return self._reshape(self.notches[idx + 1], freq_hz, now, severity_db)
-        n = Notch(band=idx + 1, freq_hz=freq_hz, gain_db=self._start_depth(severity_db),
+        if self._room() < 2.0:
+            return "budget", None
+        n = Notch(last_ring=now, band=idx + 1, freq_hz=freq_hz, gain_db=self._start_depth(severity_db),
                   width_oct=max(c.width_oct, 1 / 3), changed_at=now)
         self.notches[n.band] = n
         return "new", n

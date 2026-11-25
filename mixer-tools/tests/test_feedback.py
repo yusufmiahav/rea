@@ -66,31 +66,70 @@ class NotchTests(unittest.TestCase):
 
     def test_new_deepen_max_full(self):
         now = [0.0]
-        m = NotchManager(NotchConfig(bands=[2, 3], cooldown_s=0.5), clock=lambda: now[0])
+        m = NotchManager(NotchConfig(bands=[2, 3], total_cut_db=99, release_after_s=0), clock=lambda: now[0])
         act, n = m.handle(1000.0)
-        self.assertEqual((act, n.gain_db, round(n.width_oct, 3)), ("new", -6.0, 0.167))
+        self.assertEqual((act, n.gain_db, round(n.width_oct, 3)), ("new", -4.0, 0.167))   # gentle start
         self.assertEqual(m.handle(1005.0)[0], "cooldown")
-        now[0] = 1
+        now[0] = 2
         act, n = m.handle(1010.0)
-        self.assertEqual((act, n.gain_db), ("deeper", -9.0))
+        self.assertEqual((act, n.gain_db), ("deeper", -6.0))
         self.assertGreater(n.width_oct, 1 / 6)          # repeat rings make a wider, smoother bell
         self.assertEqual(n.freq_hz, 1000.0)              # and the band stays where it was
-        for t in range(2, 10):
-            now[0] = t; m.handle(1000.0)
-        self.assertEqual(m.handle(1000.0)[0], "cooldown")
-        now[0] = 20
+        for t in range(2, 30):
+            now[0] = 2 * t; m.handle(1000.0)
+        self.assertLessEqual(n.width_oct, 0.5)           # never wider than half an octave
+        now[0] = 100
         self.assertEqual(m.handle(1000.0)[0], "max")
         self.assertEqual(m.handle(3000.0)[0], "new")
         self.assertEqual(m.handle(8000.0), ("full", None))
 
     def test_worse_howls_get_deeper_cuts(self):
         now = [0.0]
-        m = NotchManager(NotchConfig(bands=[1, 2, 3]), clock=lambda: now[0])
-        self.assertEqual(m.handle(500.0)[1].gain_db, -6.0)
-        self.assertEqual(m.handle(2000.0, severity_db=4)[1].gain_db, -10.0)
+        m = NotchManager(NotchConfig(bands=[1, 2, 3], total_cut_db=99), clock=lambda: now[0])
+        self.assertEqual(m.handle(500.0)[1].gain_db, -4.0)
+        self.assertEqual(m.handle(2000.0, severity_db=3)[1].gain_db, -7.0)
         self.assertEqual(m.handle(6000.0, severity_db=20)[1].gain_db, -12.0)   # never past the maximum
-        now[0] = 1
-        self.assertEqual(m.handle(2000.0, severity_db=2)[1].gain_db, -12.0)    # -10 - 3 - 1, capped
+
+    def test_total_cut_is_capped(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[1, 2, 3, 4], total_cut_db=10), clock=lambda: now[0])
+        m.handle(200.0); m.handle(800.0)                 # -4 and -4
+        self.assertEqual(m.handle(3000.0)[1].gain_db, -2.0)   # only 2 dB left
+        self.assertEqual(m.handle(9000.0), ("budget", None))
+        now[0] = 2
+        self.assertEqual(m.handle(200.0)[0], "budget")
+        self.assertAlmostEqual(m.total_cut(), 10.0)
+
+    def test_cuts_recover_when_the_ringing_stops(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])
+        m.handle(1000.0)
+        now[0] = 2; m.handle(1000.0)                     # -6 dB
+        now[0] = 9
+        self.assertEqual(m.tick(), [])                   # rang 7 s ago: wait
+        now[0] = 10.5
+        act, n = m.tick()[0]
+        self.assertEqual((act, n.gain_db), ("recover", -5.0))
+        self.assertEqual(m.tick(), [])                   # one step every 2 s
+        for t in range(1, 6):
+            now[0] = 10.5 + 2 * t
+            out = m.tick()
+        self.assertEqual(out[0][0], "released")
+        self.assertEqual(m.free_bands(), [2, 3])
+
+    def test_a_cut_that_rings_again_while_recovering_stays_deeper(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[2]), clock=lambda: now[0])
+        m.handle(1000.0)
+        now[0] = 2; m.handle(1000.0)                     # -6
+        for t in (10.5, 12.5):                           # recovers to -4
+            now[0] = t; m.tick()
+        self.assertEqual(m.notches[2].gain_db, -4.0)
+        now[0] = 13; m.handle(1000.0)                    # rings again at -4
+        self.assertEqual(m.notches[2].ceiling_db, -5.0)
+        for t in range(30):
+            now[0] = 30 + 2 * t; m.tick()
+        self.assertEqual(m.notches[2].gain_db, -5.0)     # recovers only as far as it was safe
 
     def test_low_howl_raises_the_hpf_instead_of_using_a_band(self):
         now = [0.0]
@@ -99,12 +138,12 @@ class NotchTests(unittest.TestCase):
         self.assertEqual((act, n.band), ("hpf", 0))
         self.assertAlmostEqual(n.freq_hz, 80 * 2 ** 0.5, places=3)
         self.assertEqual(m.free_bands(), [2, 3])
-        now[0] = 1
+        now[0] = 2
         act, n = m.handle(85.0)                     # still ringing: the HPF goes up again, capped
         self.assertEqual((act, n.freq_hz), ("hpf", 80 * 2 ** 0.5 * 2 ** (1 / 3)))
-        now[0] = 2
+        now[0] = 4
         self.assertEqual(m.handle(90.0)[1].freq_hz, 160.0)
-        now[0] = 3
+        now[0] = 6
         self.assertEqual(m.handle(90.0)[0], "new")  # HPF at its limit: a PEQ band takes over
         self.assertEqual(m.handle(1000.0)[0], "new")  # a high howl never touches the HPF
         self.assertEqual(m.notches[0].freq_hz, 160.0)
@@ -129,7 +168,7 @@ class NotchTests(unittest.TestCase):
         now = [0.0]
         m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])
         m.handle(1000.0)
-        now[0] = 1
+        now[0] = 2
         act, n = m.handle(1150.0)   # 0.2 oct away
         self.assertEqual((act, n.band), ("wider", 2))
         self.assertAlmostEqual(n.freq_hz, (1000 * 1150) ** 0.5, places=3)
@@ -217,7 +256,7 @@ class DeskEncodingTests(unittest.TestCase):
         m = GeqManager(QU_GEQ_FREQS, NotchConfig(), max_faders=2, clock=lambda: now[0])
         act, n = m.handle(2600.0)
         self.assertEqual((act, n.band, n.freq_hz), ("new", 20, 2600))
-        now[0] = 1
+        now[0] = 2
         self.assertIn(m.handle(2550.0)[0], ("deeper", "wider"))
         self.assertEqual(m.handle(108.9)[1].band, 6)  # 100 Hz fader
         self.assertEqual(m.handle(5000.0), ("full", None))

@@ -41,13 +41,21 @@ class Suppressor:
                 self.detector.forget(ev.freq_hz)
             if self.on_event:
                 self.on_event(action, ev)
+        if not self.frozen:
+            for action, n in self.manager.tick():
+                if action == "released":
+                    self.log(f"[recover] {n.freq_hz:7.1f} Hz cut is flat again, band {n.band} is free")
+                    self.desk.clear_notch(n.band)
+                else:
+                    self.log(f"[recover] {n.freq_hz:7.1f} Hz cut eased to {n.gain_db:+.1f} dB")
+                    self.desk.set_notch(n)
 
     def severity(self, ev):
-        """Extra cut depth in dB (0-6) for a worse howl: one that stands further out of the
+        """Extra cut depth in dB (0-3) for a worse howl: one that stands further out of the
         spectrum than the detection threshold, or is already loud."""
-        over = 0.5 * max(0.0, ev.papr_db - self.detector.cfg.papr_db)
-        loud = 0.25 * max(0.0, ev.level_db + 30.0)
-        return min(6.0, round(over + loud, 1))
+        over = 0.25 * max(0.0, ev.papr_db - self.detector.cfg.papr_db)
+        loud = 0.15 * max(0.0, ev.level_db + 30.0)
+        return min(3.0, round(over + loud, 1))
 
     def clear(self):
         for n in self.manager.clear():

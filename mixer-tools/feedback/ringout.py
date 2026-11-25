@@ -85,7 +85,7 @@ class RingOut:
         self.desk.set_fader(self.level)
         self._next = self.clock() + c.settle_s
         self.log(f"[ring-out] howl at {freq_hz:.0f} Hz -> fader back to {self.level:+.1f} dB, settling")
-        if action in ("full", "max"):
+        if action in ("full", "max", "budget"):
             self._finish("no EQ left for this howl (all bands used or at full depth)")
 
     def stop(self):
