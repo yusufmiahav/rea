@@ -86,6 +86,16 @@ When a peak passes every test, the notch manager acts on it:
 The app's **Analyser (RTA)** tab shows the live spectrum of a watched channel. Peaks that are starting to
 ring show in orange, feedback that was found shows in red, and the cuts on the desk show as a green curve.
 
+The **Meters** tab shows the peak level of every channel on the audio input (Qu-16 USB: 1–16 plus main
+L/R; DM7: Dante channels), up to 64, with peak hold and a clip light. Watched channels are outlined, and
+their name turns red when feedback is found. "Start meters" shows them without running the suppressor.
+
+**Response** (Detection card, or `--speed`) sets how quickly a howl is acted on: `normal` waits 0.5 s,
+`fast` about 0.25 s and `very fast` about 0.1 s. The faster modes are also more sensitive (3–5 dB lower
+threshold, shorter analysis window) and deepen a cut sooner. In tests a growing howl was caught about
+0.6 s, 0.33 s and 0.2 s after it started. Very fast suits ringing out and loud wedges, but it can catch
+a long held sung note.
+
 ## Commands
 
 ```

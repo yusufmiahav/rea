@@ -24,7 +24,7 @@ import numpy as np
 
 from feedback.audio import live_stream, list_devices, read_wav, write_wav
 from feedback.desks import QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, QuSplitDesk, load_calibration
-from feedback.detector import DetectorConfig, FeedbackDetector
+from feedback.detector import SPEEDS, DetectorConfig, FeedbackDetector, speed_config
 from feedback.notches import GeqManager, Notch, NotchConfig, NotchManager, SplitManager
 from feedback.suppressor import Suppressor
 
@@ -56,10 +56,14 @@ def notch_cfg(a):
         bands = [int(b) for b in a.bands.split(",")]
     return NotchConfig(bands=bands, max_depth_db=max(depth, a.max_depth) if a.max_depth else depth,
                        start_depth_db=a.start_depth, width_oct=a.width,
-                       hpf_max_hz=getattr(a, "hpf_max", 0.0) or 0.0)
+                       hpf_max_hz=getattr(a, "hpf_max", 0.0) or 0.0,
+                       cooldown_s=SPEEDS[getattr(a, "speed", "normal")]["cooldown_s"])
 
 
 def det_cfg(a, sr):
+    speed = getattr(a, "speed", "normal")
+    if speed != "normal":
+        return speed_config(speed, sr, a.papr, floor_db=getattr(a, "floor", -50.0))
     return DetectorConfig(sample_rate=sr, papr_db=a.papr, persist_s=a.persist,
                           floor_db=getattr(a, "floor", -50.0))
 
@@ -167,6 +171,8 @@ def main():
                        help="raise the input's HPF for low howls, up to this many Hz (0 = off; inputs only)")
         p.add_argument("--papr", type=float, default=16.0, help="lower = more sensitive")
         p.add_argument("--persist", type=float, default=0.50, help="seconds a peak must hold")
+        p.add_argument("--speed", choices=list(SPEEDS), default="normal",
+                       help="fast / very fast act on howls sooner and more sensitively (overrides --persist)")
         p.add_argument("--floor", type=float, default=-50.0, help="ignore peaks quieter than this (dBFS)")
 
     p = sub.add_parser("simulate"); p.add_argument("--seconds", type=float, default=8)

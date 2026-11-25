@@ -16,7 +16,7 @@ except ImportError:  # tool mode and self-test work without Tk
 import numpy as np
 
 from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, QuSplitDesk, load_calibration
-from feedback.detector import DetectorConfig
+from feedback.detector import SPEEDS, DetectorConfig, speed_config
 from feedback.notches import GEQ_OFFSET, GeqManager, NotchConfig, NotchManager, SplitManager
 from feedback import rta
 from feedback import qu_routing
@@ -113,6 +113,8 @@ class App:
         self.stream = None
         self.desk = None
         self.blocks = queue.Queue(maxsize=200)
+        self.meter_stream = None   # meters-only feed, when the suppressor isn't running
+        self.meter_lv = None       # latest peak level per audio channel, dBFS
         self.devices = []
         self.mode = "dry"
         self._build()
@@ -165,6 +167,8 @@ class App:
         nb.add(tab, text="  Feedback suppressor  ")
         rtatab = ttk.Frame(nb, padding=8)
         nb.add(rtatab, text="  Analyser (RTA)  ")
+        metertab = ttk.Frame(nb, padding=8)
+        nb.add(metertab, text="  Meters  ")
         rotab = ttk.Frame(nb, padding=8)
         nb.add(rotab, text="  Ring out  ")
         tools = ttk.Frame(nb, padding=8)
@@ -236,6 +240,16 @@ class App:
         T(ttk.Spinbox(hpfrow, from_=40, to=400, increment=10, textvariable=self.hpfmax_var, width=5),
           "The highest the app may set the HPF, in Hz. 120-160 is safe for vocals; keep it lower for kick, bass or male voices.").pack(side="left")
         ttk.Label(hpfrow, text="Hz").pack(side="left", padx=(4, 0))
+        speedrow = ttk.Frame(tune)
+        speedrow.grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(speedrow, text="Response").pack(side="left", padx=(0, 6))
+        self.speed_var = tk.StringVar(value="normal")
+        T(ttk.Combobox(speedrow, textvariable=self.speed_var, values=list(SPEEDS), state="readonly", width=10),
+          "How quickly the app acts on a ringing frequency.\n"
+          "normal: waits 0.5 s to be sure, so speech and singing are left alone.\n"
+          "fast: acts after about 0.25 s, is more sensitive, and deepens a cut sooner.\n"
+          "very fast: acts after about 0.1 s. Best for ringing out or loud wedges; it may catch a long held note.\n"
+          "Takes effect when you press Start.").pack(side="left")
         tune.columnconfigure(0, weight=1)
 
         # ---- channels card
@@ -306,6 +320,7 @@ class App:
 
         self._build_ringout(rotab)
         self._build_rta(rtatab)
+        self._build_meters(metertab)
         self._build_routing(routetab)
 
         # ---- status bar
@@ -628,6 +643,158 @@ class App:
         self.rta.bind("<Configure>", lambda e: self._draw_rta(force=True))
         self.root.after(80, self._rta_tick)
 
+    # ------------------------------------------------------------ meters
+    METER_MAX = 64          # most audio channels shown (Qu USB has 18, DM7 Dante up to 144)
+    METER_LO = -60.0
+
+    def _build_meters(self, tab):
+        T = self._tip
+        bar = ttk.Frame(tab)
+        bar.pack(fill="x", pady=(0, 8))
+        ttk.Label(bar, text="Name channels as").pack(side="left")
+        self.meter_names = tk.StringVar(value="Qu-16 USB")
+        T(ttk.Combobox(bar, textvariable=self.meter_names, values=["Qu-16 USB", "DM7 / Dante", "Numbers"],
+                       state="readonly", width=14),
+          "Qu-16 USB: channels 1-16 are the inputs, 17-18 the main L/R (as set in Setup > Audio > USB).\n"
+          "DM7 / Dante: channels are numbered as patched in Dante Controller.\n"
+          "Numbers: just the channel number on the audio device.").pack(side="left", padx=(8, 16))
+        self.meter_btn = T(ttk.Button(bar, text="Start meters", command=self.toggle_meters),
+                           "Show the levels of every channel on the audio input chosen on the Feedback tab,\n"
+                           "without starting the suppressor. While the suppressor runs, the meters use its feed.")
+        self.meter_btn.pack(side="left")
+        ttk.Label(bar, style="Muted.TLabel",
+                  text="Highlighted: channels the app watches   Red top: clipping   Red name: feedback found").pack(side="right")
+        self.meter_cv = tk.Canvas(tab, background="#101418", highlightthickness=0)
+        self.meter_cv.pack(fill="both", expand=True)
+        T(self.meter_cv, "Peak level of each channel coming from the desk, in dBFS, with a peak-hold line.\n"
+                         "Aim for speech peaks around -18 to -10 dBFS; the top of the meter is 0 dBFS (digital full scale).")
+        self.meter_disp = None
+        self.meter_hold = None
+        self.meter_clip = {}
+        self.root.after(60, self._meter_tick)
+
+    def _stop_meter_stream(self):
+        if self.meter_stream is not None:
+            try:
+                self.meter_stream.close()
+            except Exception:
+                pass
+            self.meter_stream = None
+            if hasattr(self, "meter_btn"):
+                self.meter_btn.configure(text="Start meters")
+
+    def toggle_meters(self):
+        if self.meter_stream is not None:
+            self._stop_meter_stream()
+            return
+        if self.running:
+            self.log("[meters] The suppressor is running; the meters already use its feed.")
+            return
+        if not self.dev_var.get():
+            messagebox.showerror(APP, "Pick an audio input on the Feedback tab first.")
+            return
+        try:
+            import sounddevice as sd
+            dev_index = int(self.dev_var.get().split(":", 1)[0])
+            info = dict(self.devices)[dev_index]
+            n = max(1, min(int(info["max_input_channels"]), self.METER_MAX))
+
+            def cb(indata, frames, t, status):
+                self.meter_lv = 20 * np.log10(np.abs(indata).max(axis=0).astype(np.float64) + 1e-9)
+
+            self.meter_stream = sd.InputStream(device=dev_index, channels=n, samplerate=int(info["default_samplerate"]) or 48000,
+                                               blocksize=1024, dtype="float32", callback=cb)
+            self.meter_stream.start()
+            self.meter_btn.configure(text="Stop meters")
+            self.log(f"[meters] Showing {n} channel(s) of {info['name']}")
+        except Exception as e:
+            self.meter_stream = None
+            messagebox.showerror(APP, f"Could not open the audio input: {e}")
+
+    def _meter_name(self, i, n):
+        mode = self.meter_names.get()
+        if mode == "Qu-16 USB" and n >= 18:
+            return str(i + 1) if i < 16 else ("L", "R")[i - 16] if i < 18 else str(i + 1)
+        return str(i + 1)
+
+    def _meter_tick(self):
+        try:
+            if self.nb.index(self.nb.select()) == 2:
+                self._draw_meters()
+        except Exception as e:  # never let the display stop the app
+            self.log(f"[meters] {type(e).__name__}: {e}")
+        self.root.after(60, self._meter_tick)
+
+    def _meter_y(self, db, top, bot):
+        db = min(0.0, max(self.METER_LO, db))
+        return top + (bot - top) * (db / self.METER_LO)
+
+    def _draw_meters(self):
+        cv = self.meter_cv
+        w, h = cv.winfo_width(), cv.winfo_height()
+        if w < 200 or h < 120:
+            return
+        cv.delete("all")
+        text, grid = "#7d8a96", "#26303a"
+        lv = self.meter_lv
+        if lv is None or not (self.running or self.meter_stream is not None):
+            cv.create_text(w / 2, h / 2, fill=text, font=("Segoe UI", 12),
+                           text="Press Start meters (or Start on the Feedback tab) to see every channel's level.")
+            return
+        lv = np.asarray(lv, dtype=float)
+        n = len(lv)
+        # Ballistics: instant rise, 20 dB/s fall; peak hold falls after 1.5 s.
+        now = time.monotonic()
+        if self.meter_disp is None or len(self.meter_disp) != n:
+            self.meter_disp, self.meter_hold = lv.copy(), [(v, now) for v in lv]
+        self.meter_disp = np.maximum(lv, self.meter_disp - 1.2)
+        for i, v in enumerate(lv):
+            hv, ht = self.meter_hold[i]
+            if v >= hv:
+                self.meter_hold[i] = (v, now)
+            elif now - ht > 1.5:                      # held for 1.5 s, then falls
+                self.meter_hold[i] = (max(v, hv - 1.0), ht)
+            if v >= -1.0:
+                self.meter_clip[i] = now
+        top, bot, left = 14, h - 44, 40
+        for db in (0, -6, -12, -18, -24, -36, -48, -60):
+            y = self._meter_y(db, top, bot)
+            cv.create_line(left - 4, y, w - 8, y, fill=grid)
+            cv.create_text(left - 18, y, text=f"{db}", fill=text, font=("Segoe UI", 8))
+        watched = {}
+        for r in self.rows:
+            watched.setdefault(r["chan"] - 1, []).append(r)
+        slot = (w - left - 10) / n
+        bw = max(3.0, min(36.0, slot * 0.7))
+        for i in range(n):
+            x0 = left + i * slot + (slot - bw) / 2
+            x1 = x0 + bw
+            if i in watched:
+                cv.create_rectangle(x0 - 3, top - 4, x1 + 3, bot + 2, outline="#4aa3ff", width=1)
+            cv.create_rectangle(x0, top, x1, bot, fill="#1a2128", outline="")
+            v = self.meter_disp[i]
+            if v > self.METER_LO:
+                # green below -18, yellow to -6, red above
+                for lo, hi, col in ((self.METER_LO, -18.0, "#3ddc84"), (-18.0, -6.0, "#ffd23f"), (-6.0, 0.0, "#ff4d4d")):
+                    if v > lo:
+                        cv.create_rectangle(x0, self._meter_y(min(v, hi), top, bot), x1, self._meter_y(lo, top, bot),
+                                            fill=col, outline="")
+            hv = self.meter_hold[i][0]
+            if hv > self.METER_LO:
+                y = self._meter_y(hv, top, bot)
+                cv.create_line(x0, y, x1, y, fill="#e8eef4", width=2)
+            if now - self.meter_clip.get(i, -99) < 2.0:
+                cv.create_rectangle(x0, top - 10, x1, top - 3, fill="#ff2020", outline="")
+            howl = any(now - t < 3 for r in watched.get(i, []) for t, *_ in r.get("howls", []))
+            name = self._meter_name(i, n)
+            step = 1 if slot >= 18 else (2 if slot >= 9 else 4)
+            if i in watched or i % step == 0:
+                cv.create_text((x0 + x1) / 2, bot + 12, text=name, font=("Segoe UI", 8, "bold" if i in watched else ""),
+                               fill="#ff4d4d" if howl else ("#4aa3ff" if i in watched else text))
+            if i in watched and slot >= 24:
+                cv.create_text((x0 + x1) / 2, bot + 26, text=watched[i][0]["target"], font=("Segoe UI", 7),
+                               fill="#ff4d4d" if howl else "#4aa3ff")
+
     def _rta_x(self, f, w):
         return 50 + (w - 100) * math.log(f / self.RTA_LO) / math.log(self.RTA_HI / self.RTA_LO)
 
@@ -911,6 +1078,7 @@ class App:
             self.desk = self._make_desk(kind, apply, self.rows[0]["target"])
             self.log(f"Desk link OK: {self.desk.check_link()}")
             saved = self._read_saved_notches(kind)
+            speed = self.speed_var.get() if self.speed_var.get() in SPEEDS else "normal"
             views, managers = {}, {}
             for r in self.rows:
                 # Rows that point at the same desk channel share one set of bands, so they
@@ -922,12 +1090,13 @@ class App:
                     ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind],
                                        hpf_max_hz=float(self.hpfmax_var.get()) if use_hpf else 0.0,
                                        release_after_s=8.0 if self.recover_var.get() else 0.0,
-                                       total_cut_db=24.0 if kind == "qu-geq" else 18.0)
+                                       total_cut_db=24.0 if kind == "qu-geq" else 18.0,
+                                       cooldown_s=SPEEDS[speed]["cooldown_s"])
                     if kind == "qu-split":
                         # PEQ for the severe, narrow howls; GEQ for the gentler, broader ones.
                         ncfg.total_cut_db = 15.0
                         gcfg = NotchConfig(max_depth_db=MAX_DEPTH[kind], total_cut_db=18.0,
-                                           release_after_s=ncfg.release_after_s)
+                                           release_after_s=ncfg.release_after_s, cooldown_s=ncfg.cooldown_s)
                         managers[key] = SplitManager(NotchManager(ncfg), GeqManager(QU_GEQ_FREQS, gcfg))
                     elif kind == "qu-geq":
                         managers[key] = GeqManager(QU_GEQ_FREQS, ncfg)
@@ -936,8 +1105,8 @@ class App:
                 r["desk"], manager = views[key], managers[key]
                 ncfg = manager.cfg
                 r["howls"] = []
-                r["sup"] = Suppressor(r["desk"], DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get(),
-                                                                floor_db=float(self.floor_var.get())),
+                r["sup"] = Suppressor(r["desk"], speed_config(speed, sr, self.sens_var.get(),
+                                                              floor_db=float(self.floor_var.get())),
                                       ncfg, log=lambda m, t=r["target"]: self.q.put(("log", f"{t}: {m}")),
                                       manager=manager, on_event=lambda a, e, row=r: self._on_howl(row, a, e))
                 r["sup"].frozen = self.freeze_var.get()
@@ -957,6 +1126,8 @@ class App:
                 except queue.Full:
                     pass
 
+            self._stop_meter_stream()
+            nch = max(nch, min(int(info["max_input_channels"]), self.METER_MAX))  # all channels, for the meters
             self.stream = sd.InputStream(device=dev_index, channels=nch, samplerate=sr,
                                          blocksize=512, dtype="float32", callback=cb)
             self.running = True
@@ -1000,6 +1171,7 @@ class App:
                 x = self.blocks.get(timeout=0.2)
             except queue.Empty:
                 continue
+            self.meter_lv = 20 * np.log10(np.abs(x).max(axis=0) + 1e-9)
             for r in self.rows:
                 try:
                     col = x[:, r["chan"] - 1]
@@ -1255,7 +1427,7 @@ class App:
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
-                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax", "recover")}
+                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax", "recover", "speed")}
         data["rows"] = [{k: r[k] for k in ("chan", "target", "bands")} for r in self.rows]
         data["ringout"] = {k: v.get() for k, v in self.ro_vars.items()}
         with open(SETTINGS, "w", encoding="utf-8") as f:
@@ -1283,6 +1455,7 @@ class App:
     def on_close(self):
         if self.running:
             self.stop()
+        self._stop_meter_stream()
         self.root.destroy()
 
 
@@ -1377,7 +1550,7 @@ def smoke_drive(root):
         app.rt_ret.set("Ip16")
         app.routing_apply()
     root.after(1000, try_routing)
-    root.after(3500, lambda: app.nb.select(3))  # the Qu routing tab  # CI screenshots: feedback tab, then the analyser
+    root.after(3500, lambda: app.nb.select(2))  # CI screenshots: feedback tab, then the meters
     root.after(7000, app.stop)
     return app
 
@@ -1408,6 +1581,8 @@ def main():
                 problems.append("an error was logged")
             if "[analyser]" in text:
                 problems.append("the analyser failed")
+            if "[meters]" in text:
+                problems.append("the meters failed")
             if getattr(sys, "frozen", False):
                 try:
                     import sv_ttk

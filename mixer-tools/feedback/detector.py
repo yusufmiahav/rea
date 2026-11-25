@@ -44,6 +44,23 @@ class DetectorConfig:
         return max(2, int(round(self.persist_s * self.sample_rate / self.hop_size)))
 
 
+# How quickly the app acts on a ringing peak. Faster modes confirm a howl sooner, use a shorter
+# analysis window, trust a lower peak-over-average (more sensitive) and let a cut deepen again
+# sooner, at the cost of now and then catching a held sung note.
+SPEEDS = {
+    "normal":    dict(persist_s=0.50, papr_offset_db=0.0, fft_size=8192, min_slope_db_s=-2.0, cooldown_s=1.5),
+    "fast":      dict(persist_s=0.25, papr_offset_db=-3.0, fft_size=4096, min_slope_db_s=-3.0, cooldown_s=0.8),
+    "very fast": dict(persist_s=0.12, papr_offset_db=-5.0, fft_size=4096, min_slope_db_s=-4.0, cooldown_s=0.5),
+}
+
+
+def speed_config(speed: str, sample_rate=48000, papr_db=16.0, **kw) -> "DetectorConfig":
+    """DetectorConfig for one of SPEEDS. papr_db is the Sensitivity setting before the mode's offset."""
+    s = SPEEDS[speed]
+    return DetectorConfig(sample_rate=sample_rate, papr_db=papr_db + s["papr_offset_db"], persist_s=s["persist_s"],
+                          fft_size=s["fft_size"], min_slope_db_s=s["min_slope_db_s"], **kw)
+
+
 @dataclass
 class FeedbackEvent:
     freq_hz: float

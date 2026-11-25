@@ -365,6 +365,30 @@ class QuRoutingTests(unittest.TestCase):
         self.assertIn("B0 63 40 B0 62 55 B0 06 01 B0 26 04", out[0])
 
 
+class SpeedTests(unittest.TestCase):
+    def _first_hit(self, speed):
+        from feedback.detector import speed_config
+        d = FeedbackDetector(speed_config(speed, SR))
+        x = synth.howl(3, 2500.0)
+        for i in range(0, len(x), 512):
+            if d.process(x[i:i + 512]):
+                return i / SR
+        return None
+
+    def test_faster_modes_catch_sooner(self):
+        t = {s: self._first_hit(s) for s in ("normal", "fast", "very fast")}
+        self.assertTrue(all(v is not None for v in t.values()), t)
+        self.assertLess(t["fast"], t["normal"])
+        self.assertLess(t["very fast"], t["fast"])
+
+    def test_very_fast_leaves_speech_alone(self):
+        from feedback.detector import speed_config
+        d = FeedbackDetector(speed_config("very fast", SR))
+        x = synth.speechlike(6)
+        hits = sum(len(d.process(x[i:i + 512])) for i in range(0, len(x), 512))
+        self.assertEqual(hits, 0)
+
+
 class SplitTests(unittest.TestCase):
     def _split(self):
         from feedback.desks import QU_GEQ_FREQS
