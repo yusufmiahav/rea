@@ -125,7 +125,9 @@ class App:
     def _card(self, parent, title, subtitle=None):
         outer = ttk.LabelFrame(parent, text=f"  {title}  ", padding=(12, 8))
         if subtitle:
-            ttk.Label(outer, text=subtitle, style="Muted.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=(0, 6))
+            sub = ttk.Label(outer, text=subtitle, style="Muted.TLabel", wraplength=300, justify="left")
+            sub.pack(anchor="w", fill="x", pady=(0, 6))
+            sub.bind("<Configure>", lambda e: e.widget.configure(wraplength=max(120, e.width - 4)))
         body = ttk.Frame(outer)
         body.pack(fill="both", expand=True)
         return outer, body
