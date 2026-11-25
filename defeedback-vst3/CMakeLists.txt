@@ -29,6 +29,7 @@ if(DFB_BUILD_PLUGIN)
 
   juce_add_plugin(DeFeedbackAI
     COMPANY_NAME "REA Apps"
+    BUNDLE_ID com.reaapps.defeedbackai
     PLUGIN_MANUFACTURER_CODE Reaa
     PLUGIN_CODE Dfai
     FORMATS VST3 Standalone

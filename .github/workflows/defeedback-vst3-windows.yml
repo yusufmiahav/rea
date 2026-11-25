@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure (JUCE 8.0.9 fetched by CMake)
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+        run: cmake -B build -A x64
       - name: Build plugin, standalone, tests and tools
         run: cmake --build build --config Release --parallel --target DeFeedbackAI_VST3 DeFeedbackAI_Standalone dfb_tests dfb_sim dfb_snapshot
       - name: Core self-tests
