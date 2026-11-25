@@ -43,10 +43,18 @@ class DryRun:
     def check_link(self, timeout=3.0):
         return "dry run"
 
+    has_hpf = True
+
     def set_notch(self, n: Notch):
+        if n.band == 0:
+            self.log(f"[dry-run] {self.target} HPF -> {n.freq_hz:.0f} Hz")
+            return
         self.log(f"[dry-run] {self.target} band {n.band}: {n.freq_hz:7.1f} Hz  {n.gain_db:+.1f} dB  {n.width_oct:.3f} oct")
 
     def clear_notch(self, band):
+        if band == 0:
+            self.log(f"[dry-run] {self.target} HPF left where it is (set it back on the desk if you want)")
+            return
         self.log(f"[dry-run] {self.target} band {band}: flat")
 
     def set_fader(self, db):
@@ -77,6 +85,8 @@ QU_GEQ_IN = 0x71
 AH_HDR = bytes([0xF0, 0x00, 0x00, 0x1A, 0x50, 0x11, 0x01, 0x00])
 QU_BOX_IDS = {1: "Qu-16", 2: "Qu-24", 3: "Qu-32", 4: "Qu-Pac", 5: "Qu-SB"}
 QU_PEQ_IN = 0x11
+QU_HPF_FREQ = 0x13  # Qu MIDI Protocol V1.9; inputs and stereo inputs only
+QU_HPF_IN = 0x14
 QU_PEQ_VX = 0x07
 QU_FADER = 0x17
 # Fader 7-bit value <-> dB, key points from the Qu MIDI Protocol V1.9 (verify on the desk).
@@ -139,6 +149,13 @@ class QuScale:
             return self._interp(self.cal["width"], octaves, log_x=True)
         octaves = min(1.5, max(1 / 9, octaves))
         return round(127 * math.log(1.5 / octaves) / math.log(1.5 * 9))
+
+    def hpf(self, hz: float) -> int:
+        """HPF frequency, ASSUMED log 20 Hz..2 kHz over 00..7F (check with qu16_probe sync)."""
+        if "hpf" in self.cal:
+            return self._interp(self.cal["hpf"], hz, log_x=True)
+        hz = min(2000.0, max(20.0, hz))
+        return round(127 * math.log(hz / 20.0) / math.log(100.0))
 
     @staticmethod
     def gain(db: float) -> int:
@@ -250,7 +267,15 @@ class QuDesk:
         self.sock.sendall(data)
         self.log(f"[qu sent] {self.target} {label}: {data.hex(' ').upper()}")
 
+    @property
+    def has_hpf(self):
+        return 0x20 <= self.ch <= 0x42  # inputs and ST inputs have an HPF; mixes and LR don't
+
     def set_notch(self, n: Notch):
+        if n.band == 0:
+            self._send([self.nrpn(QU_HPF_FREQ, self.scale.hpf(n.freq_hz)), self.nrpn(QU_HPF_IN, 0x01, 0x00)],
+                       f"HPF {n.freq_hz:.0f} Hz")
+            return
         g, f, w, typ = QU_BANDS[n.band]
         msgs = []
         if typ is not None:
@@ -260,6 +285,9 @@ class QuDesk:
         self._send(msgs, f"PEQ {QU_BAND_NAMES[n.band]} {n.freq_hz:.1f} Hz {n.gain_db:+.1f} dB")
 
     def clear_notch(self, band):
+        if band == 0:
+            self.log(f"[qu] {self.target} HPF left where it is (the app can't read what it was before)")
+            return
         g, _, _, _ = QU_BANDS[band]
         self._send([self.nrpn(g, self.scale.gain(0.0))], f"PEQ {QU_BAND_NAMES[band]} flat")
 
@@ -307,6 +335,8 @@ class QuGeqDesk(QuDesk):
         if msgs:
             msgs.append(self.nrpn(QU_GEQ_IN, 0x01, 0x00))
             self._send(msgs, f"GEQ curve ({why}) " + " ".join(parts))
+
+    has_hpf = False
 
     def set_notch(self, n: Notch):
         """Shapes the cut over the faders around it as a smooth curve, not one fader."""
@@ -410,7 +440,15 @@ class Dm7Desk:
         # band is 1-4 as on the desk; RCP's Y index is 0-based
         self._line(f"set MIXER:Current/{self.kind}/PEQ/{param} {self.x} {band - 1} {value}")
 
+    @property
+    def has_hpf(self):
+        return self.kind == "InCh"
+
     def set_notch(self, n: Notch):
+        if n.band == 0:  # HPF: frequency ASSUMED in 0.1 Hz like the PEQ (check with dm7_rcp_probe get)
+            self._line(f"set MIXER:Current/{self.kind}/HPF/On {self.x} 0 1")
+            self._line(f"set MIXER:Current/{self.kind}/HPF/Freq {self.x} 0 {round(min(2000, max(20, n.freq_hz)) * 10)}")
+            return
         self._line(f"set MIXER:Current/{self.kind}/PEQ/On {self.x} 0 1")
         self._set("Band/Bypass", n.band, 0)
         self._set("Band/Freq", n.band, round(min(20000, max(20, n.freq_hz)) * 10))
@@ -418,6 +456,9 @@ class Dm7Desk:
         self._set("Band/Gain", n.band, round(max(-18, min(18, n.gain_db)) * 100))
 
     def clear_notch(self, band):
+        if band == 0:
+            self.log(f"[dm7] {self.target} HPF left where it is (the app can't read what it was before)")
+            return
         self._set("Band/Gain", band, 0)
 
     def close(self):

@@ -26,7 +26,10 @@ class SimDesk:
 
     def set_notch(self, n: Notch):
         old = self.bands.get(n.band)
-        f = Biquad.peaking(self.sr, n.freq_hz, n.gain_db, octaves_to_q(n.width_oct))
+        if n.band == 0:  # HPF
+            f = Biquad.highpass(self.sr, n.freq_hz)
+        else:
+            f = Biquad.peaking(self.sr, n.freq_hz, n.gain_db, octaves_to_q(n.width_oct))
         if old is not None:
             f.z1, f.z2 = old.z1, old.z2
         self.bands[n.band] = f

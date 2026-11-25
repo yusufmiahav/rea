@@ -52,7 +52,8 @@ def notch_cfg(a):
     if getattr(a, "bands", None):
         bands = [int(b) for b in a.bands.split(",")]
     return NotchConfig(bands=bands, max_depth_db=max(depth, a.max_depth) if a.max_depth else depth,
-                       start_depth_db=a.start_depth, width_oct=a.width)
+                       start_depth_db=a.start_depth, width_oct=a.width,
+                       hpf_max_hz=getattr(a, "hpf_max", 0.0) or 0.0)
 
 
 def det_cfg(a, sr):
@@ -156,6 +157,8 @@ def main():
         p.add_argument("--start-depth", type=float, default=-6.0)
         p.add_argument("--max-depth", type=float, default=None)
         p.add_argument("--width", type=float, default=1 / 6, help="starting cut width in octaves (repeat rings widen it)")
+        p.add_argument("--hpf-max", type=float, default=0.0,
+                       help="raise the input's HPF for low howls, up to this many Hz (0 = off; inputs only)")
         p.add_argument("--papr", type=float, default=16.0, help="lower = more sensitive")
         p.add_argument("--persist", type=float, default=0.30, help="seconds a peak must hold")
         p.add_argument("--floor", type=float, default=-50.0, help="ignore peaks quieter than this (dBFS)")

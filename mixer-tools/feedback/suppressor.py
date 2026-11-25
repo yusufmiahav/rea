@@ -30,10 +30,12 @@ class Suppressor:
             action, notch = self.manager.handle(ev.freq_hz, self.severity(ev))
             msg = (f"[howl] {ev.freq_hz:7.1f} Hz {ev.level_db:6.1f} dBFS  PAPR {ev.papr_db:4.1f}  "
                    f"PNPR {ev.pnpr_db:4.1f}  PHPR {ev.phpr_db:4.1f}  -> {action}")
-            if notch is not None:
+            if notch is not None and notch.band == 0:
+                msg += f" HPF {notch.freq_hz:.0f} Hz"
+            elif notch is not None:
                 msg += f" band {notch.band} {notch.freq_hz:.1f} Hz {notch.gain_db:+.1f} dB {notch.width_oct:.2f} oct"
             self.log(msg)
-            if action in ("new", "deeper", "wider"):
+            if action in ("new", "deeper", "wider", "hpf"):
                 self.desk.set_notch(notch)
             if action != "full":
                 self.detector.forget(ev.freq_hz)

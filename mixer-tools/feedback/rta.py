@@ -39,6 +39,17 @@ def _peaking_db(freqs, f0, gain_db, q, sr):
     return 20 * np.log10(np.abs(h) + 1e-12)
 
 
+def _highpass_db(freqs, f0, sr):
+    w0 = 2 * math.pi * f0 / sr
+    al = math.sin(w0) / (2 * 0.7071)
+    c = math.cos(w0)
+    b = np.array([(1 + c) / 2, -(1 + c), (1 + c) / 2])
+    a = np.array([1 + al, -2 * c, 1 - al])
+    z = np.exp(-1j * 2 * np.pi * np.asarray(freqs) / sr)
+    h = (b[0] + b[1] * z + b[2] * z * z) / (a[0] + a[1] * z + a[2] * z * z)
+    return 20 * np.log10(np.abs(h) + 1e-12)
+
+
 def eq_response_db(notches, freqs, geq_freqs=None, sr=96000.0) -> np.ndarray:
     """Total EQ change in dB at each frequency. With geq_freqs, the cuts are shown as the
     graphic EQ curve the desk gets (faders joined up); otherwise as parametric bells."""
@@ -50,5 +61,8 @@ def eq_response_db(notches, freqs, geq_freqs=None, sr=96000.0) -> np.ndarray:
         return np.interp(np.log2(freqs), np.log2(geq_freqs), g, left=0.0, right=0.0)
     out = np.zeros(len(freqs))
     for n in notches:
+        if n.band == 0:  # HPF, 12 dB/octave
+            out += _highpass_db(freqs, n.freq_hz, sr)
+            continue
         out += _peaking_db(freqs, n.freq_hz, n.gain_db, octaves_to_q(n.width_oct), sr)
     return out

@@ -24,6 +24,9 @@ def q_to_octaves(q: float) -> float:
     return 2.0 / math.log(2.0) * math.asinh(1.0 / (2.0 * q))  # standard bandwidth relation
 
 
+HPF_BAND = 0  # a Notch on band 0 means "the channel's high-pass filter at freq_hz"
+
+
 @dataclass
 class Notch:
     band: int                 # desk band number (PEQ 1-4, or GEQ fader 1-28)
@@ -59,6 +62,9 @@ class NotchConfig:
     spill_oct: float = 2 / 3       # when every band is used, a howl this close widens the nearest cut
     lock_oct: float = 1 / 24       # within this of the centre the band stays put and just deepens
     cooldown_s: float = 0.5        # ignore re-hits on a cut for this long after a change
+    hpf_max_hz: float = 0.0        # >0: a howl low enough is handled by raising the HPF, up to this
+    hpf_margin_oct: float = 0.5    # the HPF goes this far above the howl (12 dB/oct -> about 6-8 dB down)
+    hpf_step_oct: float = 1 / 3    # each repeat ring below the HPF raises it this much more
 
 
 class NotchManager:
@@ -74,9 +80,34 @@ class NotchManager:
     def free_bands(self):
         return [b for b in self.cfg.bands if b not in self.notches]
 
+    def _hpf(self, freq_hz, now):
+        """Raise the HPF for a low howl. Returns (action, Notch) or None if the HPF can't help."""
+        c = self.cfg
+        if c.hpf_max_hz <= 0 or freq_hz * 2 ** c.hpf_margin_oct > c.hpf_max_hz * 2 ** (1 / 6):
+            return None
+        cur = self.notches.get(HPF_BAND)
+        want = freq_hz * 2 ** c.hpf_margin_oct
+        if cur is not None:
+            if now - cur.changed_at < c.cooldown_s:
+                return "cooldown", cur
+            # Still ringing with the HPF in: go up at least one more step.
+            want = max(want, cur.freq_hz * 2 ** c.hpf_step_oct)
+            if cur.freq_hz >= c.hpf_max_hz:
+                return None          # at the limit: let a PEQ band take it
+        want = min(c.hpf_max_hz, want)
+        if cur is None:
+            cur = Notch(band=HPF_BAND, freq_hz=want, gain_db=0.0, width_oct=0.0, changed_at=now)
+            self.notches[HPF_BAND] = cur
+        else:
+            cur.freq_hz, cur.hits, cur.changed_at = want, cur.hits + 1, now
+        cur.lo_hz = min(cur.lo_hz, freq_hz)
+        return "hpf", cur
+
     def _nearest(self, freq_hz, limit):
         best = None
         for n in self.notches.values():
+            if n.band == HPF_BAND:
+                continue
             d = n.distance_oct(freq_hz)
             if d <= limit and (best is None or d < best[0]):
                 best = (d, n)
@@ -114,6 +145,9 @@ class NotchManager:
         (Notch is None for "full")."""
         now = self.clock()
         c = self.cfg
+        hp = self._hpf(freq_hz, now)
+        if hp is not None:
+            return hp
         near = self._nearest(freq_hz, c.merge_oct)
         if near is not None:
             return self._reshape(near, freq_hz, now, severity_db)
@@ -178,6 +212,8 @@ def geq_curve(notches, freqs, min_db=-12.0):
     Returns {fader number (1-based): gain dB} for every fader that should be cut (rounded to 0.5 dB)."""
     out = {}
     for n in notches:
+        if n.band == HPF_BAND:
+            continue
         sigma = max(0.2, n.width_oct * 0.75)  # in octaves
         centre = min(range(len(freqs)), key=lambda i: abs(math.log2(freqs[i] / n.freq_hz)))
         for i, f in enumerate(freqs):

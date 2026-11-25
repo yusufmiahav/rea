@@ -92,6 +92,39 @@ class NotchTests(unittest.TestCase):
         now[0] = 1
         self.assertEqual(m.handle(2000.0, severity_db=2)[1].gain_db, -12.0)    # -10 - 3 - 1, capped
 
+    def test_low_howl_raises_the_hpf_instead_of_using_a_band(self):
+        now = [0.0]
+        m = NotchManager(NotchConfig(bands=[2, 3], hpf_max_hz=160), clock=lambda: now[0])
+        act, n = m.handle(80.0)
+        self.assertEqual((act, n.band), ("hpf", 0))
+        self.assertAlmostEqual(n.freq_hz, 80 * 2 ** 0.5, places=3)
+        self.assertEqual(m.free_bands(), [2, 3])
+        now[0] = 1
+        act, n = m.handle(85.0)                     # still ringing: the HPF goes up again, capped
+        self.assertEqual((act, n.freq_hz), ("hpf", 80 * 2 ** 0.5 * 2 ** (1 / 3)))
+        now[0] = 2
+        self.assertEqual(m.handle(90.0)[1].freq_hz, 160.0)
+        now[0] = 3
+        self.assertEqual(m.handle(90.0)[0], "new")  # HPF at its limit: a PEQ band takes over
+        self.assertEqual(m.handle(1000.0)[0], "new")  # a high howl never touches the HPF
+        self.assertEqual(m.notches[0].freq_hz, 160.0)
+        # Off by default.
+        self.assertEqual(NotchManager(NotchConfig(bands=[2])).handle(80.0)[0], "new")
+
+    def test_hpf_messages(self):
+        import io, contextlib
+        out = []
+        QuDesk(None, "Ip1", log=out.append).set_notch(Notch(band=0, freq_hz=200.0, gain_db=0, width_oct=0))
+        self.assertIn("B0 62 13 B0 06 40 B0 26 07", out[0])   # HPF freq, 200 Hz = midpoint of 20-2k
+        self.assertIn("B0 62 14 B0 06 01 B0 26 00", out[0])   # HPF in
+        self.assertTrue(QuDesk(None, "Ip1").has_hpf)
+        self.assertFalse(QuDesk(None, "Mix1").has_hpf)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            Dm7Desk(None, "InCh:2").set_notch(Notch(band=0, freq_hz=120.0, gain_db=0, width_oct=0))
+        self.assertIn("set MIXER:Current/InCh/HPF/Freq 2 0 1200", buf.getvalue())
+        self.assertFalse(Dm7Desk(None, "Mix:0").has_hpf)
+
     def test_nearby_howl_widens_instead_of_moving_or_taking_a_band(self):
         now = [0.0]
         m = NotchManager(NotchConfig(bands=[2, 3]), clock=lambda: now[0])

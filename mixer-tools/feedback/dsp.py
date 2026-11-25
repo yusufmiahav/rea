@@ -20,6 +20,13 @@ class Biquad:
         return cls([1 + al * A, -2 * math.cos(w), 1 - al * A], [1 + al / A, -2 * math.cos(w), 1 - al / A])
 
     @classmethod
+    def highpass(cls, sr, f0, q=0.7071):
+        w = 2 * math.pi * f0 / sr
+        al = math.sin(w) / (2 * q)
+        c = math.cos(w)
+        return cls([(1 + c) / 2, -(1 + c), (1 + c) / 2], [1 + al, -2 * c, 1 - al])
+
+    @classmethod
     def bandpass(cls, sr, f0, q, peak_gain=1.0):
         w = 2 * math.pi * f0 / sr
         al = math.sin(w) / (2 * q)

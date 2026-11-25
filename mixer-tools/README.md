@@ -69,7 +69,13 @@ When a peak passes every test, the notch manager acts on it:
 5. Rows on the same desk channel share one set of bands, so they can't fight over one.
 6. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve, and
    overlapping cuts take the deeper value at each fader.
-7. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
+7. With the HPF switched on (the app's "HPF up to" switch, or `--hpf-max 160`), a low howl raises the
+   input's high-pass filter to half an octave above the howl instead of using a PEQ band. If it rings
+   again, the HPF goes up another 1/3 octave, never past the limit. Once the HPF is at the limit, a PEQ
+   band takes over. Mixes and LR have no HPF, so this only works on inputs. The Qu HPF uses NRPN `13`
+   (frequency, assumed log from 20 Hz to 2 kHz) and `14` (in). On the DM7 it uses `InCh/HPF/Freq` and `On`.
+   **Clear cuts** doesn't move the HPF back, because the app can't read where it was before.
+8. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
    changes at most once every 0.5 s.
 
 The app's **Analyser (RTA)** tab shows the live spectrum of a watched channel. Peaks that are starting to

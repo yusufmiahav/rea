@@ -217,8 +217,19 @@ class App:
           "Left: only acts on loud, obvious howls.\nRight: catches feedback earlier, but may also catch steady notes.\nThe middle (16) suits most rooms.").grid(row=1, column=0, sticky="we", pady=(0, 8))
         ttk.Label(tune, text="Ignore anything quieter than (dBFS)").grid(row=2, column=0, sticky="w")
         self.floor_var = tk.IntVar(value=-50)
-        T(ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6),
-          "Steady tones quieter than this are ignored. Hum and room tone usually sit below -50 dBFS.").grid(row=3, column=0, sticky="w")
+        lowrow = ttk.Frame(tune)
+        lowrow.grid(row=3, column=0, sticky="w")
+        T(ttk.Spinbox(lowrow, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6),
+          "Steady tones quieter than this are ignored. Hum and room tone usually sit below -50 dBFS.").pack(side="left")
+        self.hpf_var = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(lowrow, text="HPF up to", variable=self.hpf_var, style="Switch.TCheckbutton"),
+          "Low howls (rumble, boomy wedges) are handled by raising the channel's high-pass filter\n"
+          "instead of using up a PEQ band. It only ever goes up, never past the limit you set here,\n"
+          "and if it reaches the limit a PEQ band takes over. Inputs only: mixes and LR have no HPF.").pack(side="left", padx=(14, 4))
+        self.hpfmax_var = tk.IntVar(value=160)
+        T(ttk.Spinbox(lowrow, from_=40, to=400, increment=10, textvariable=self.hpfmax_var, width=5),
+          "The highest the app may set the HPF, in Hz. 120-160 is safe for vocals; keep it lower for kick, bass or male voices.").pack(side="left")
+        ttk.Label(lowrow, text="Hz").pack(side="left", padx=(4, 0))
         tune.columnconfigure(0, weight=1)
 
         # ---- channels card
@@ -471,6 +482,10 @@ class App:
                                fill="#3ddc84", width=3, smooth=True)
                 for n in notches:
                     x = self._rta_x(min(self.RTA_HI, max(self.RTA_LO, n.freq_hz)), w)
+                    if n.band == 0:
+                        cv.create_text(x, self._eq_y(-3, h) - 12, fill="#3ddc84", font=("Segoe UI", 8),
+                                       text=f"HPF {n.freq_hz:.0f} Hz")
+                        continue
                     cv.create_text(x, self._eq_y(n.gain_db, h) + 14, fill="#3ddc84", font=("Segoe UI", 8),
                                    text=f"{n.freq_hz:.0f} Hz {n.gain_db:+.0f} dB")
 
@@ -551,7 +566,9 @@ class App:
     def _cuts_text(self, sup):
         out = []
         for n in sorted(sup.manager.notches.values(), key=lambda n: n.band):
-            if self.mode == "qu-geq":
+            if n.band == 0:
+                out.append(f"HPF {n.freq_hz:.0f}Hz")
+            elif self.mode == "qu-geq":
                 out.append(f"{n.freq_hz:g}Hz {n.gain_db:+.0f}")
             else:
                 name = QU_BAND_NAMES.get(n.band, n.band) if self.mode == "qu" else f"B{n.band}"
@@ -654,7 +671,9 @@ class App:
                 key = r["target"].lower()
                 if key not in views:
                     views[key] = self.desk.view(r["target"])
-                    ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind])
+                    use_hpf = self.hpf_var.get() and getattr(views[key], "has_hpf", False) and kind != "qu-geq"
+                    ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind],
+                                       hpf_max_hz=float(self.hpfmax_var.get()) if use_hpf else 0.0)
                     managers[key] = (GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq"
                                      else NotchManager(ncfg))
                 r["desk"], manager = views[key], managers[key]
@@ -972,7 +991,7 @@ class App:
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
-                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor")}
+                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax")}
         data["rows"] = [{k: r[k] for k in ("chan", "target", "bands")} for r in self.rows]
         data["ringout"] = {k: v.get() for k, v in self.ro_vars.items()}
         with open(SETTINGS, "w", encoding="utf-8") as f:
