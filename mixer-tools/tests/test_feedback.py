@@ -160,15 +160,23 @@ class DeskEncodingTests(unittest.TestCase):
         self.assertEqual(d._faders, {})
         self.assertEqual(out[1].count("B0 62 70"), len(c))
 
+    def test_geq_reaches_full_depth_between_faders(self):
+        from feedback.desks import QU_GEQ_FREQS
+        from feedback.notches import geq_curve
+        c = geq_curve([Notch(band=20, freq_hz=2700.0, gain_db=-12.0, width_oct=1 / 3)], QU_GEQ_FREQS)
+        self.assertEqual(c[20], -12.0)
+        self.assertLess(c[21], c[19])  # 3.15 k is nearer to 2.7 k than 2 k is, so it is cut more
+
     def test_geq_manager_picks_nearest_fader(self):
         from feedback.desks import QU_GEQ_FREQS
         from feedback.notches import GeqManager
         now = [0.0]
+        self.assertEqual(GeqManager(QU_GEQ_FREQS).max_faders, 28)   # all faders are available by default
         m = GeqManager(QU_GEQ_FREQS, NotchConfig(), max_faders=2, clock=lambda: now[0])
         act, n = m.handle(2600.0)
         self.assertEqual((act, n.band, n.freq_hz), ("new", 20, 2600))
         now[0] = 1
-        self.assertIn(m.handle(2450.0)[0], ("deeper", "wider"))
+        self.assertIn(m.handle(2550.0)[0], ("deeper", "wider"))
         self.assertEqual(m.handle(108.9)[1].band, 6)  # 100 Hz fader
         self.assertEqual(m.handle(5000.0), ("full", None))
 

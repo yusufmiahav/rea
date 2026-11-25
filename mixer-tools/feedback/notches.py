@@ -140,13 +140,15 @@ class NotchManager:
 class GeqManager(NotchManager):
     """For a graphic EQ. Each howl becomes a cut keyed by its nearest fader, but the cut keeps
     the real howl frequency and a width, so the desk can spread it over the neighbouring
-    faders as a smooth curve (see geq_curve). cfg.bands is ignored; max_faders limits how many
-    separate cuts it makes."""
+    faders as a smooth curve (see geq_curve). cfg.bands is ignored. Every fader can carry a cut
+    (max_faders limits that if you want), and a howl only merges into a cut within 1/6 octave,
+    so neighbouring faders can each take their own howl."""
 
-    def __init__(self, freqs, config: NotchConfig | None = None, max_faders=6, clock=time.monotonic):
+    def __init__(self, freqs, config: NotchConfig | None = None, max_faders=None, clock=time.monotonic):
         super().__init__(config, clock)
         self.freqs = list(freqs)
-        self.max_faders = max_faders
+        self.max_faders = max_faders or len(self.freqs)
+        self.cfg.merge_oct = min(self.cfg.merge_oct, 1 / 6)
 
     def handle(self, freq_hz: float):
         now = self.clock()
@@ -172,11 +174,13 @@ def geq_curve(notches, freqs, min_db=-12.0):
     out = {}
     for n in notches:
         sigma = max(0.2, n.width_oct * 0.75)  # in octaves
+        centre = min(range(len(freqs)), key=lambda i: abs(math.log2(freqs[i] / n.freq_hz)))
         for i, f in enumerate(freqs):
             d = abs(math.log2(f / n.freq_hz))
             if d > 3 * sigma:
                 continue
-            g = n.gain_db * math.exp(-0.5 * (d / sigma) ** 2)
+            # The nearest fader takes the full depth; the ones either side follow a bell.
+            g = n.gain_db if i == centre else n.gain_db * math.exp(-0.5 * (d / sigma) ** 2)
             g = round(g * 2) / 2
             if g <= -1.0:
                 out[i + 1] = max(min_db, min(out.get(i + 1, 0.0), g))

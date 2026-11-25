@@ -66,7 +66,7 @@ When a peak passes every test, the notch manager acts on it:
 4. When every band is in use, a howl within 2/3 octave of a cut widens that cut. Anything further
    away is reported as `full`, and no band is moved.
 5. Rows on the same desk channel share one set of bands, so they can't fight over one.
-6. On the Qu GEQ, each cut is spread over the faders either side of it as a bell curve, and
+6. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve, and
    overlapping cuts take the deeper value at each fader.
 7. The deepest cut is −12 dB on the Qu (the most its PEQ allows) and −18 dB on the DM7. A band
    changes at most once every 0.5 s.
