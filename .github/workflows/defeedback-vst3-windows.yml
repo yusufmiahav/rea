@@ -1,0 +1,58 @@
+name: De-Feedback AI VST3 (Windows)
+
+on:
+  push:
+    branches: [claude/project-thread-dgwlxt]
+    paths: ["defeedback-vst3/**", ".github/workflows/defeedback-vst3-windows.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: defeedback-vst3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure (JUCE 8.0.9 fetched by CMake)
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64
+      - name: Build plugin, standalone, tests and tools
+        run: cmake --build build --config Release --parallel --target DeFeedbackAI_VST3 DeFeedbackAI_Standalone dfb_tests dfb_sim dfb_snapshot
+      - name: Core self-tests
+        run: build\Release\dfb_tests.exe
+      - name: Closed-loop evaluation (simulated rooms)
+        run: build\Release\dfb_sim.exe eval 99 12 0.5
+      - name: UI snapshot
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse build -Filter dfb_snapshot.exe | Select-Object -First 1
+          & $exe.FullName "$PWD\ui-snapshot.png"
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "$PWD\package\DeFeedbackAI"
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $vst = Get-ChildItem -Recurse build -Directory -Filter "De-Feedback AI.vst3" | Select-Object -First 1
+          Copy-Item -Recurse $vst.FullName "$out\"
+          $sa = Get-ChildItem -Recurse build -Filter "De-Feedback AI.exe" | Where-Object { $_.FullName -match "Standalone" } | Select-Object -First 1
+          Copy-Item $sa.FullName "$out\De-Feedback AI (Standalone).exe"
+          Copy-Item README.md "$out\README.md"
+          New-Item -ItemType Directory -Force "$out\demo" | Out-Null
+          build\Release\dfb_sim.exe demo "$out\demo" 7
+          if (Test-Path ui-snapshot.png) { Copy-Item ui-snapshot.png "$out\" }
+          Compress-Archive -Path $out -DestinationPath "$PWD\package\DeFeedbackAI-win64.zip" -Force
+          Get-ChildItem -Recurse package | Select-Object FullName, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeFeedbackAI-win64
+          path: defeedback-vst3/package/DeFeedbackAI-win64.zip
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshot
+          path: defeedback-vst3/ui-snapshot.png
+          if-no-files-found: ignore
