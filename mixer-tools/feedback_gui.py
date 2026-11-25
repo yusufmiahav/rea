@@ -360,8 +360,8 @@ class App:
         T(ttk.Checkbutton(bar, text="Pause", variable=self.rta_pause, style="Switch.TCheckbutton"),
           "Freeze the picture so you can read it. Listening and cutting carry on as normal.").pack(side="left")
         legend = ttk.Label(bar, style="Muted.TLabel",
-                           text="blue: level   orange: ringing   red: feedback found   green: cuts on the desk")
-        legend.pack(side="right")
+                           text="Blue: level   Orange: ringing   Red: feedback   Green: cuts")
+        legend.pack(side="right", padx=(16, 0))
         self.rta = tk.Canvas(tab, background="#101418", highlightthickness=0)
         self.rta.pack(fill="both", expand=True)
         T(self.rta, "Live analyser of the channel's audio. Left to right is 20 Hz to 20 kHz.\n"
@@ -445,14 +445,18 @@ class App:
                 cv.create_text(x, y - 14, text=f"{f:.0f}", fill="#ff9f1a", font=("Segoe UI", 8, "bold"))
         # Feedback the app found, fading over 10 s.
         now = time.monotonic()
+        latest = {}  # one marker per frequency (the newest), so labels don't pile up
         for t, f, action in r.get("howls", []):
+            latest[round(math.log2(f) * 24)] = (t, f, action)
+        for i, (t, f, action) in enumerate(sorted(latest.values(), key=lambda h: h[1])):
             age = now - t
             if age > 10 or not self.RTA_LO <= f <= self.RTA_HI:
                 continue
             x = self._rta_x(f, w)
             col = "#ff4d4d" if age < 3 else "#a33a3a"
             cv.create_line(x, 12, x, h - 28, fill=col, dash=(4, 3), width=2 if age < 3 else 1)
-            cv.create_text(x + 4, 22, text=f"{f:.0f} Hz {action}", fill=col, anchor="w", font=("Segoe UI", 9, "bold"))
+            cv.create_text(x + 4, 22 + 14 * (i % 3), text=f"{f:.0f} Hz {action}", fill=col, anchor="w",
+                           font=("Segoe UI", 9, "bold"))
         # The cuts on the desk, on the right-hand scale.
         notches = list(sup.manager.notches.values())
         if self.rta_eq.get():
