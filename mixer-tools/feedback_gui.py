@@ -221,15 +221,17 @@ class App:
         lowrow.grid(row=3, column=0, sticky="w")
         T(ttk.Spinbox(lowrow, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6),
           "Steady tones quieter than this are ignored. Hum and room tone usually sit below -50 dBFS.").pack(side="left")
+        hpfrow = ttk.Frame(tune)
+        hpfrow.grid(row=4, column=0, sticky="w", pady=(8, 0))
         self.hpf_var = tk.BooleanVar(value=True)
-        T(ttk.Checkbutton(lowrow, text="HPF up to", variable=self.hpf_var, style="Switch.TCheckbutton"),
+        T(ttk.Checkbutton(hpfrow, text="Raise HPF up to", variable=self.hpf_var, style="Switch.TCheckbutton"),
           "Low howls (rumble, boomy wedges) are handled by raising the channel's high-pass filter\n"
           "instead of using up a PEQ band. It only ever goes up, never past the limit you set here,\n"
-          "and if it reaches the limit a PEQ band takes over. Inputs only: mixes and LR have no HPF.").pack(side="left", padx=(14, 4))
+          "and if it reaches the limit a PEQ band takes over. Inputs only: mixes and LR have no HPF.").pack(side="left", padx=(0, 6))
         self.hpfmax_var = tk.IntVar(value=160)
-        T(ttk.Spinbox(lowrow, from_=40, to=400, increment=10, textvariable=self.hpfmax_var, width=5),
+        T(ttk.Spinbox(hpfrow, from_=40, to=400, increment=10, textvariable=self.hpfmax_var, width=5),
           "The highest the app may set the HPF, in Hz. 120-160 is safe for vocals; keep it lower for kick, bass or male voices.").pack(side="left")
-        ttk.Label(lowrow, text="Hz").pack(side="left", padx=(4, 0))
+        ttk.Label(hpfrow, text="Hz").pack(side="left", padx=(4, 0))
         tune.columnconfigure(0, weight=1)
 
         # ---- channels card
