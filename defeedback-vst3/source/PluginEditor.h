@@ -84,6 +84,9 @@ private:
     juce::ComboBox mode;
     juce::ToggleButton lock{"Lock all"}, freeze{"Freeze"}, bypass{"Bypass"};
     juce::TextButton clearAll{"Clear all"}, clearLive{"Clear live"};
+    juce::ToggleButton learn{"Learn"};
+    juce::TextButton wasFb{"Was feedback"}, notFb{"Not feedback"}, openFolder{"Open logs"};
+    juce::Label learnStatus;
     juce::Label sourceLabel, status, modelInfo;
     std::unique_ptr<ComboAtt> modeAtt;
     std::unique_ptr<ButtonAtt> lockAtt, freezeAtt, bypassAtt;

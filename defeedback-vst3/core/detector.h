@@ -69,6 +69,7 @@ public:
     }
 
     int fftSize() const { return n; }
+    double nowSeconds() const { return frameIdx * frameDt; }
     double binWidth() const { return binHz; }
     double hopSeconds() const { return frameDt; }
     const std::vector<double>& spectrumDb() const { return db; }

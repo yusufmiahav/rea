@@ -52,7 +52,7 @@ void LookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, int h
 void LookAndFeel::drawToggleButton(juce::Graphics& g, juce::ToggleButton& b, bool hi, bool) {
     auto r = b.getLocalBounds().toFloat().reduced(1.f);
     const bool on = b.getToggleState();
-    const auto onCol = b.getName() == "Bypass" ? col::cut : (b.getName() == "Lock all" ? col::fixed : col::accent);
+    const auto onCol = b.getName() == "Bypass" ? col::cut : (b.getName() == "Lock all" ? col::fixed : (b.getName() == "Learn" ? juce::Colour(0xff9b8cff) : col::accent));
     g.setColour(on ? onCol.withAlpha(0.22f) : (hi ? col::panelHi.brighter(0.08f) : col::panelHi));
     g.fillRoundedRectangle(r, 5.f);
     g.setColour(on ? onCol : col::grid);
@@ -274,6 +274,29 @@ DeFeedbackEditor::DeFeedbackEditor(DeFeedbackProcessor& p)
     addAndMakeVisible(clearAll);
     addAndMakeVisible(clearLive);
 
+    learn.setName("Learn");
+    learn.setToggleState(p.isLearning(), juce::dontSendNotification);
+    learn.setTooltip("Record what the detector hears on this channel to Documents\\De-Feedback AI so the AI can be retrained on your real rooms. Use the buttons below to say whether the last cut was right.");
+    learn.onClick = [this] {
+        if (!proc.setLearning(learn.getToggleState())) learn.setToggleState(false, juce::dontSendNotification);
+    };
+    addAndMakeVisible(learn);
+    wasFb.setTooltip("The last cut was real feedback (teaches the AI to keep catching rings like it).");
+    notFb.setTooltip("The last cut was a mistake, e.g. a held note or a voice (teaches the AI to leave it alone).");
+    openFolder.setTooltip("Open the folder with the Learn logs. Send these files to retrain the classifier.");
+    wasFb.onClick = [this] { proc.markLastCut(true); };
+    notFb.onClick = [this] { proc.markLastCut(false); };
+    openFolder.onClick = [] {
+        auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("De-Feedback AI");
+        dir.createDirectory();
+        dir.startAsProcess();
+    };
+    for (auto* b : {&wasFb, &notFb, &openFolder}) addAndMakeVisible(*b);
+    learnStatus.setFont(juce::FontOptions(11.f));
+    learnStatus.setColour(juce::Label::textColourId, col::dim);
+    learnStatus.setJustificationType(juce::Justification::centredLeft);
+    addAndMakeVisible(learnStatus);
+
     sourceLabel.setText(p.sourceName, juce::dontSendNotification);
     sourceLabel.setEditable(true);
     sourceLabel.setTooltip("Name the desk channel this is on (click to edit), e.g. Qu-16 Ch 3 Vocal.");
@@ -342,6 +365,8 @@ void DeFeedbackEditor::resized() {
     sourceLabel.setBounds(top.removeFromLeft(180));
     top.removeFromLeft(10);
     mode.setBounds(top.removeFromLeft(110));
+    top.removeFromLeft(10);
+    learn.setBounds(top.removeFromLeft(90));
     bypass.setBounds(top.removeFromRight(90));
     top.removeFromRight(6);
     freeze.setBounds(top.removeFromRight(86));
@@ -349,6 +374,14 @@ void DeFeedbackEditor::resized() {
     lock.setBounds(top.removeFromRight(96));
 
     auto bottom = r.removeFromBottom(150).reduced(10, 6).reduced(8, 6);
+    auto learnCol = bottom.removeFromRight(140);
+    bottom.removeFromRight(10);
+    wasFb.setBounds(learnCol.removeFromTop(30).reduced(0, 2));
+    learnCol.removeFromTop(4);
+    notFb.setBounds(learnCol.removeFromTop(30).reduced(0, 2));
+    learnCol.removeFromTop(4);
+    openFolder.setBounds(learnCol.removeFromTop(30).reduced(0, 2));
+    learnStatus.setBounds(learnCol);
     auto buttons = bottom.removeFromRight(120);
     clearAll.setBounds(buttons.removeFromTop(34).reduced(0, 2));
     buttons.removeFromTop(6);
@@ -377,6 +410,11 @@ void DeFeedbackEditor::timerCallback() {
     outMeter.tick(ch);
     spectrum.tick();
     notches.repaint();
+    const bool learning = proc.isLearning();
+    wasFb.setEnabled(learning);
+    notFb.setEnabled(learning);
+    learnStatus.setText(learning ? juce::String(proc.learnRows()) + " rows, " + juce::String(proc.learnMarks) + " marks"
+                                 : "Learn is off", juce::dontSendNotification);
     const int ev = proc.engine.eventCount.load();
     if (ev != lastEvents) {
         lastEvents = ev;

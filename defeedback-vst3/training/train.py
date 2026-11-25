@@ -6,7 +6,13 @@ noise and drum sources with and without the loop (label 0). The features are
 computed by the same C++ detector that runs in the plugin, so training and
 inference see exactly the same numbers.
 
-    python train.py train1.csv [train2.csv ...] --val val.csv --out ../core/model_weights.h
+    python train.py train1.csv [train2.csv ...] --val val.csv --out ../core/model_weights.h \
+        [--real learn-2026-11-25.csv ...]
+
+--real takes Learn-mode logs from the plugin and `dfb_sim learn` logs from
+recordings. A "mark" row (the Was feedback / Not feedback buttons) labels the
+cut and the track rows within 3% of its frequency in the 4 s before it.
+Ring-out cuts nobody marked as wrong count as feedback. Real rows weigh 5x.
 Needs numpy and pandas only.
 """
 import argparse
@@ -21,6 +27,35 @@ NAMES = ["papr", "pnpr", "phpr", "sub", "slope_db_s", "pitch_wobble_cents",
 
 def load(paths):
     return pd.concat([pd.read_csv(p) for p in paths], ignore_index=True)
+
+
+def load_real(paths):
+    out = []
+    for path in paths:
+        d = pd.read_csv(path)
+        d["label"] = d["label"].astype(int)
+        marks = d[d.kind == "mark"]
+        cuts = d[d.kind == "cut"]
+        tracks = d[d.kind == "track"].copy()
+        for _, m in marks.iterrows():
+            f = m.freq
+            if f <= 0:  # no frequency: apply to the most recent cut
+                prev = cuts[cuts.t <= m.t]
+                if prev.empty:
+                    continue
+                f = prev.iloc[-1].freq
+            near = (tracks.t >= m.t - 4) & (tracks.t <= m.t) & ((tracks.freq / f - 1).abs() < 0.03)
+            tracks.loc[near, "label"] = int(m.label)
+        # Ring-out cuts nobody marked wrong: the peak that triggered them was feedback
+        for _, c in cuts[(cuts["mode"] == 1)].iterrows():
+            near = (tracks.t >= c.t - 0.3) & (tracks.t <= c.t) & ((tracks.freq / c.freq - 1).abs() < 0.02) & (tracks.label < 0)
+            tracks.loc[near, "label"] = 1
+        tracks = tracks[tracks.label >= 0]
+        tracks["src"] = "real"
+        tracks["clip"] = -1
+        print(f"{path}: {len(tracks)} labelled rows ({int(tracks.label.sum())} feedback)")
+        out.append(tracks)
+    return pd.concat(out, ignore_index=True) if out else None
 
 
 def init(rng, nin):
@@ -102,8 +137,12 @@ def main():
     ap.add_argument("--val", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--real", nargs="*", default=[])
     a = ap.parse_args()
     tr, va = load(a.train), load([a.val])
+    real = load_real(a.real) if a.real else None
+    if real is not None and len(real):
+        tr = pd.concat([tr, real[["src", "label"] + FEATS]], ignore_index=True)
     x = tr[FEATS].to_numpy(np.float64); y = tr["label"].to_numpy(np.float64)
     xv = va[FEATS].to_numpy(np.float64); yv = va["label"].to_numpy(np.float64)
     mean = x.mean(0); scale = x.std(0) + 1e-6
@@ -111,6 +150,7 @@ def main():
     # balance classes, and make false cuts on musical material cost more
     sw = np.where(y > 0, 0.5 / y.mean(), 0.5 / (1 - y.mean()))
     sw *= np.where((y == 0) & tr["src"].isin(["held", "sung", "chord"]).to_numpy(), 2.0, 1.0)
+    sw *= np.where(tr["src"].to_numpy() == "real", 5.0, 1.0)
     print(f"train rows {len(x)} (pos {int(y.sum())}), val rows {len(xv)} (pos {int(yv.sum())})")
     p = train(x, y, sw, xv, yv, epochs=a.epochs)
     _, _, ov = forward(p, xv); pv = 1 / (1 + np.exp(-ov))
@@ -122,7 +162,7 @@ def main():
         neg = g[g.label == 0]
         print(f"  {s:7s} false positives at 0.6: {(neg.p >= 0.6).mean() * 100:5.2f}% of {len(neg)} frames")
     n = len(x)
-    export(a.out, p, mean, scale, f"MLP 10-{H1}-{H2}-1 trained on {n // 1000}k simulated frames")
+    export(a.out, p, mean, scale, f"MLP 10-{H1}-{H2}-1 trained on {n // 1000}k frames" + (f" incl. {len(real) // 1000}k real" if real is not None else " (simulated)"))
     print("wrote", a.out)
 
 

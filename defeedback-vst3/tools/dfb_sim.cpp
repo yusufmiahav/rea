@@ -4,6 +4,7 @@
 //   dfb_sim eval <seed> <clips> [sensitivity]
 //   dfb_sim demo <outdir> [seed]
 //   dfb_sim wav <in.wav> <out.wav> [sensitivity]
+//   dfb_sim learn <in.wav> <out.csv> [12.5-14.0 ...]   (feedback time ranges in seconds)
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -11,6 +12,7 @@
 #include <set>
 #include <string>
 
+#include "../core/learnlog.h"
 #include "sim.h"
 #include "wav.h"
 
@@ -180,12 +182,45 @@ static int cmdWav(const char* in, const char* out, float sens) {
     return 0;
 }
 
+// Run a recording through the detector and log its cues for retraining.
+// Ranges given as start-end seconds are marked as feedback; everything else in a
+// recording is treated as "not feedback" (a clean show recording is ideal for that).
+static int cmdLearn(const char* in, const char* out, int nr, char** ranges) {
+    std::vector<std::vector<float>> ch; double fs;
+    if (!wav::read(in, ch, fs)) { std::fprintf(stderr, "cannot read %s\n", in); return 1; }
+    std::vector<std::pair<double, double>> fb;
+    for (int i = 0; i < nr; ++i) { double a, b; if (std::sscanf(ranges[i], "%lf-%lf", &a, &b) == 2) fb.push_back({a, b}); }
+    // mono mix, detection only: we want the cues of the raw recording
+    const size_t N = ch[0].size();
+    std::vector<float> mono(N, 0.f);
+    for (auto& c : ch) for (size_t i = 0; i < N; ++i) mono[i] += c[i] / ch.size();
+    dfb::Engine e; e.prepare(fs, 1, 512); e.setSensitivity(1.0f); e.bypass = true; e.learn = true;
+    dfb::LearnLog log; if (!log.open(out)) { std::fprintf(stderr, "cannot write %s\n", out); return 1; }
+    std::vector<dfb::Engine::LearnRow> rows(dfb::Engine::kLearnCap);
+    long pos = 0, neg = 0;
+    for (size_t i = 0; i < N; i += 512) {
+        float* p[1] = {mono.data() + i};
+        e.process(p, 1, (int)std::min<size_t>(512, N - i));
+        const int n = e.popLearn(rows.data(), (int)rows.size());
+        for (int k = 0; k < n; ++k) {
+            bool isFb = false; for (auto& r : fb) isFb |= rows[k].t >= r.first && rows[k].t <= r.second;
+            // inside a feedback range only the strongest, sharpest peaks are the howl
+            int label = isFb ? (rows[k].feat[0] > 18.f && rows[k].feat[1] > 15.f ? 1 : -1) : 0;
+            log.write(rows[k], label);
+            if (label == 1) ++pos; else if (label == 0) ++neg;
+        }
+    }
+    std::printf("wrote %ld rows (%ld feedback, %ld not feedback) to %s\n", log.rows, pos, neg, out);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) { std::fprintf(stderr, "usage: see source header\n"); return 2; }
     std::string cmd = argv[1];
     if (cmd == "data" && argc >= 5) return cmdData(std::atoi(argv[2]), std::atoi(argv[3]), argv[4]);
     if (cmd == "eval" && argc >= 4) return cmdEval(std::atoi(argv[2]), std::atoi(argv[3]), argc > 4 ? std::atof(argv[4]) : 0.5f);
     if (cmd == "demo" && argc >= 3) return cmdDemo(argv[2], argc > 3 ? std::atoi(argv[3]) : 7);
+    if (cmd == "learn" && argc >= 4) return cmdLearn(argv[2], argv[3], argc - 4, argv + 4);
     if (cmd == "wav" && argc >= 4) return cmdWav(argv[2], argv[3], argc > 4 ? std::atof(argv[4]) : 0.5f);
     std::fprintf(stderr, "bad arguments\n"); return 2;
 }

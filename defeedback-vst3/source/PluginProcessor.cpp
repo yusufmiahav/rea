@@ -88,6 +88,48 @@ void DeFeedbackProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     engine.process(buffer.getArrayOfWritePointers(), juce::jmin(buffer.getNumChannels(), dfb::kMaxChannels), buffer.getNumSamples());
 }
 
+bool DeFeedbackProcessor::setLearning(bool on) {
+    if (on == isLearning()) return true;
+    if (!on) {
+        engine.learn = false;
+        drainLearn();
+        learnLog.close();
+        stopTimer();
+        return true;
+    }
+    auto dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("De-Feedback AI");
+    dir.createDirectory();
+    auto safe = juce::File::createLegalFileName(sourceName).replaceCharacter(' ', '-');
+    learnFile = dir.getChildFile("learn-" + juce::Time::getCurrentTime().formatted("%Y%m%d-%H%M%S") + "-" + safe + ".csv");
+    if (!learnLog.open(learnFile.getFullPathName().toStdString())) return false;
+    learnScratch.resize(dfb::Engine::kLearnCap);
+    learnMarks = 0;
+    engine.learn = true;
+    startTimerHz(4);
+    return true;
+}
+
+void DeFeedbackProcessor::drainLearn() {
+    if (!learnLog.isOpen()) return;
+    int n;
+    while ((n = engine.popLearn(learnScratch.data(), (int)learnScratch.size())) > 0)
+        for (int i = 0; i < n; ++i) {
+            if (learnScratch[i].kind == 1) lastCutFreq = learnScratch[i].freq;
+            learnLog.write(learnScratch[i]);
+        }
+    learnLog.flush();
+}
+
+void DeFeedbackProcessor::timerCallback() { drainLearn(); }
+
+void DeFeedbackProcessor::markLastCut(bool wasFeedback) {
+    if (!isLearning()) return;
+    drainLearn();
+    const float f = engine.lastEventFreq.load();
+    learnLog.mark(engine.nowSeconds(), wasFeedback ? 1 : 0, f > 0 ? f : lastCutFreq);
+    ++learnMarks;
+}
+
 juce::AudioProcessorEditor* DeFeedbackProcessor::createEditor() { return new DeFeedbackEditor(*this); }
 
 void DeFeedbackProcessor::getStateInformation(juce::MemoryBlock& destData) {

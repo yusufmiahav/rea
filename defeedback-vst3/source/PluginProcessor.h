@@ -2,11 +2,12 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "engine.h"
+#include "learnlog.h"
 
-class DeFeedbackProcessor : public juce::AudioProcessor {
+class DeFeedbackProcessor : public juce::AudioProcessor, private juce::Timer {
 public:
     DeFeedbackProcessor();
-    ~DeFeedbackProcessor() override = default;
+    ~DeFeedbackProcessor() override { stopTimer(); setLearning(false); }
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override {}
@@ -38,7 +39,21 @@ public:
     std::atomic<bool> clearRequest{false}, clearLiveRequest{false};
     juce::String sourceName{"Qu-16 Ch 1"};
 
+    // Learn mode (message thread only)
+    bool setLearning(bool on);          // opens/closes a log in Documents/De-Feedback AI
+    bool isLearning() const { return learnLog.isOpen(); }
+    void markLastCut(bool wasFeedback); // Was feedback / Not feedback buttons
+    juce::File learnFile;
+    long learnRows() const { return learnLog.rows; }
+    int learnMarks = 0;
+
 private:
+    void timerCallback() override;
+    void drainLearn();
+    dfb::LearnLog learnLog;
+    std::vector<dfb::Engine::LearnRow> learnScratch;
+    double lastCutFreq = 0.0;
+
     struct Fixed { double f, db, oct; };
     juce::SpinLock pendingLock;
     std::vector<Fixed> pendingFixed;

@@ -3,6 +3,7 @@
 #pragma once
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 #include "detector.h"
@@ -27,6 +28,21 @@ public:
     Meter inMeter[kMaxChannels], outMeter[kMaxChannels];
     std::atomic<float> display[kDisplayBins];
     std::atomic<int> numChannels{2};
+    // ---- Learn mode: every decision-ready track's cues go into a lock-free FIFO
+    // that the message thread drains to a CSV for retraining on real sessions.
+    struct LearnRow { double t, freq; float feat[kNumFeatures]; float p; uint8_t kind, mode; }; // kind 0 = track cues, 1 = a cut was made
+    static constexpr int kLearnCap = 8192;
+    std::atomic<bool> learn{false};
+    std::atomic<int> learnDropped{0};
+    int popLearn(LearnRow* out, int max) {
+        const int w = lw.load(std::memory_order_acquire), r = lr.load(std::memory_order_relaxed);
+        int n = 0;
+        for (int i = r; i != w && n < max; i = (i + 1) % kLearnCap) out[n++] = learnBuf[i];
+        lr.store((r + n) % kLearnCap, std::memory_order_release);
+        return n;
+    }
+    double nowSeconds() const { return detector.nowSeconds(); }
+
     struct SlotView { std::atomic<float> freq{0}, db{0}, oct{0}; std::atomic<int> state{0}; }; // 0 off,1 live,2 fixed
     SlotView slotView[kMaxNotches];
     std::atomic<int> eventCount{0};
@@ -37,6 +53,9 @@ public:
         chans = std::min(channels, kMaxChannels);
         numChannels = chans;
         detector.prepare(fs);
+        detector.featureTap = &Engine::tap;
+        detector.tapCtx = this;
+        learnBuf.resize(kLearnCap);
         bank.prepare(fs, chans);
         mono.assign(std::max(maxBlock, 1), 0.f);
         events.reserve(64);
@@ -63,6 +82,7 @@ public:
         if (!bypass && !frozen)
             for (const auto& e : events) {
                 bank.trigger(e.freq, e.severity);
+                pushCut(e);
                 eventCount.fetch_add(1);
                 lastEventFreq = (float)e.freq;
             }
@@ -115,6 +135,32 @@ private:
         }
     }
 
+    static void tap(void* ctx, double t, double f, const float* feat, float p) {
+        auto* e = static_cast<Engine*>(ctx);
+        if (!e->learn.load(std::memory_order_relaxed)) return;
+        if (feat[0] < 10.f) return; // only peaks that stand out; keeps files small
+        const int w = e->lw.load(std::memory_order_relaxed), nw = (w + 1) % kLearnCap;
+        if (nw == e->lr.load(std::memory_order_acquire)) { e->learnDropped.fetch_add(1); return; }
+        auto& row = e->learnBuf[w];
+        row.t = t; row.freq = f; row.p = p;
+        for (int i = 0; i < kNumFeatures; ++i) row.feat[i] = feat[i];
+        row.kind = 0;
+        row.mode = (uint8_t)(e->ringOut ? 1 : 0);
+        e->lw.store(nw, std::memory_order_release);
+    }
+
+    void pushCut(const HowlEvent& ev) {
+        if (!learn.load(std::memory_order_relaxed)) return;
+        const int w = lw.load(std::memory_order_relaxed), nw = (w + 1) % kLearnCap;
+        if (nw == lr.load(std::memory_order_acquire)) { learnDropped.fetch_add(1); return; }
+        auto& row = learnBuf[w];
+        row = LearnRow{};
+        row.t = detector.nowSeconds(); row.freq = ev.freq; row.p = ev.prob; row.kind = 1; row.mode = (uint8_t)(ringOut ? 1 : 0);
+        lw.store(nw, std::memory_order_release);
+    }
+
+    std::vector<LearnRow> learnBuf;
+    std::atomic<int> lw{0}, lr{0};
     double fs = 48000, meterDecay = 0.9999;
     int chans = 2;
     bool lockAll = false, ringOut = false;
