@@ -58,10 +58,10 @@ Every ~21 ms it takes an 8192-point FFT and checks each strong peak against all 
 
 When a peak passes every test, the notch manager acts on it:
 
-1. A new frequency gets a free EQ band as a gentle bell cut 1/6 octave wide. It starts at −4 dB, or up
+1. A new frequency gets a free EQ band as a gentle bell cut 1/4 octave wide. It starts at −4 dB, or up
    to 3 dB deeper for a worse howl (one that stands further out of the spectrum or is already loud).
 2. Once a band has a frequency it stays there. If that frequency rings again (and at least 1.5 s has
-   passed since the last change), the bell goes 2 dB deeper and a little wider, up to half an octave.
+   passed since the last change), the bell goes 2 dB deeper and a little wider, up to 2/3 octave.
 3. **Recovery:** once a cut's frequency has been quiet for 8 s, the cut eases back 1 dB every 2 s until
    it's flat and the band is free again. If it rings again on the way up, it drops 1 dB below where it
    rang and never comes back up past that point.
@@ -72,7 +72,7 @@ When a peak passes every test, the notch manager acts on it:
 6. When every band is in use, a howl within 2/3 octave of a cut widens that cut. Anything further
    away is reported as `full`, and no band is moved.
 7. Rows on the same desk channel share one set of bands, so they can't fight over one.
-8. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve, and
+8. On the Qu GEQ, all 28 faders are available and each can go to −12 dB. Each cut is spread over the faders either side of it as a bell curve (for example −4/−8/−12/−8/−4). Nearby cuts are joined into one shape, no two neighbouring faders differ by more than 4 dB, and
    overlapping cuts take the deeper value at each fader.
 9. With the HPF switched on (the app's "HPF up to" switch, or `--hpf-max 160`), a low howl raises the
    input's high-pass filter to half an octave above the howl instead of using a PEQ band. If it rings
@@ -171,3 +171,16 @@ public VST3 SDK or JUCE's `AudioPluginFormatManager`. It would:
 
 It uses only the plugin's public VST3 interface. That means no decompiling and no work around its
 licensing.
+
+## Qu routing page
+
+The **Qu routing** tab sends the input channels you pick to a mix, **post-fade**, and takes them off L+R.
+The mix output is patched to a socket and cabled (or looped over USB) into a spare **return input**, which
+goes on L+R. You can then EQ the mix (and point the feedback suppressor at it) while the L+R EQ stays clean.
+**Read from desk** asks the desk for its system state and shows each channel's L+R and mix assignment.
+**Put back on L+R** undoes it.
+
+The messages used are NRPN `55` (mix assign), `50` (pre/post), `20` (send level), `18` (L+R assign) and
+`17` (fader), with VX set to the mix's channel code (Mix1 = `60`). Pre/post `00` = post-fade and the L+R
+assign VX `07` are **assumed**. If **Read from desk** sees a different VX for L+R, the app uses that one.
+Check the routing screen on the desk the first time you use it.

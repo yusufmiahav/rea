@@ -57,9 +57,9 @@ class NotchConfig:
     start_depth_db: float = -4.0
     step_db: float = -2.0
     max_depth_db: float = -12.0
-    width_oct: float = 1 / 6       # starting width: a visible bell, not a pin-prick
+    width_oct: float = 1 / 4       # starting width: a soft bell, not a pin-prick
     widen_step: float = 1.15       # each repeat ring widens the bell by this factor
-    max_width_oct: float = 0.5
+    max_width_oct: float = 2 / 3
     total_cut_db: float = 18.0     # most cut allowed on one channel, all bands added together
     release_after_s: float = 8.0   # a cut that hasn't rung for this long starts to recover (0 = never)
     release_every_s: float = 2.0   # ...rising this often
@@ -278,7 +278,32 @@ def geq_curve(notches, freqs, min_db=-12.0):
                 continue
             # The nearest fader takes the full depth; the ones either side follow a bell.
             g = n.gain_db if i == centre else n.gain_db * math.exp(-0.5 * (d / sigma) ** 2)
-            g = round(g * 2) / 2
-            if g <= -1.0:
-                out[i + 1] = max(min_db, min(out.get(i + 1, 0.0), g))
+            out[i + 1] = max(min_db, min(out.get(i + 1, 0.0), g))
+    return smooth_geq(out, len(freqs))
+
+
+def smooth_geq(cuts: dict, n_faders: int, max_step_db=4.0, bridge=2) -> dict:
+    """Makes the faders one continuous curve instead of a zig-zag:
+      * a fader up to `bridge` places from deeper faders on both sides is brought down onto the line
+        between them, so two nearby cuts join up instead of leaving a spike between them,
+      * neighbouring faders never differ by more than `max_step_db` (the shallower one comes down),
+    then rounds to 0.5 dB and drops anything shallower than 1 dB."""
+    g = [cuts.get(i + 1, 0.0) for i in range(n_faders)]
+    for _ in range(2):
+        for i in range(n_faders):
+            left = [(i - k, g[i - k]) for k in range(1, bridge + 1) if i - k >= 0 and g[i - k] < g[i]]
+            right = [(i + k, g[i + k]) for k in range(1, bridge + 1) if i + k < n_faders and g[i + k] < g[i]]
+            if left and right:
+                (li, lg), (ri, rg) = min(left, key=lambda t: t[1]), min(right, key=lambda t: t[1])
+                line = lg + (rg - lg) * (i - li) / (ri - li)
+                g[i] = min(g[i], line)
+    for i in range(1, n_faders):                       # limit the slope, left to right...
+        g[i] = min(g[i], g[i - 1] + max_step_db)
+    for i in range(n_faders - 2, -1, -1):              # ...and right to left
+        g[i] = min(g[i], g[i + 1] + max_step_db)
+    out = {}
+    for i, v in enumerate(g):
+        v = round(v * 2) / 2
+        if v <= -1.0:
+            out[i + 1] = v
     return out

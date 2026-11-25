@@ -19,6 +19,7 @@ from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk,
 from feedback.detector import DetectorConfig
 from feedback.notches import GeqManager, NotchConfig, NotchManager
 from feedback import rta
+from feedback import qu_routing
 from feedback.suppressor import Suppressor
 
 APP = "Mixer Tools"
@@ -166,6 +167,8 @@ class App:
         rotab = ttk.Frame(nb, padding=8)
         nb.add(rotab, text="  Ring out  ")
         tools = ttk.Frame(nb, padding=8)
+        routetab = ttk.Frame(nb, padding=8)
+        nb.add(routetab, text="  Qu routing  ")
         nb.add(tools, text="  Desk tools  ")
         self._build_tools(tools)
 
@@ -302,6 +305,7 @@ class App:
 
         self._build_ringout(rotab)
         self._build_rta(rtatab)
+        self._build_routing(routetab)
 
         # ---- status bar
         sbar = ttk.Frame(root, padding=(16, 6))
@@ -355,6 +359,198 @@ class App:
         self.ro_status.pack(anchor="w")
         self.ringout = None
         self.ro_row = None
+
+    # ------------------------------------------------------------- Qu routing
+    def _build_routing(self, tab):
+        T = self._tip
+        top = ttk.Frame(tab)
+        top.pack(fill="both", expand=True)
+        c1, b1 = self._card(top, "1  Pick the channels",
+                            "Ctrl-click or Shift-click to pick several. Press Read from desk to see how they're routed now.")
+        c1.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self.rt_tree = ttk.Treeview(b1, columns=("ch", "lr", "sends"), show="headings", height=10, selectmode="extended")
+        for col, text, w in (("ch", "Channel", 80), ("lr", "On L+R", 70), ("sends", "Sent to (from the desk)", 220)):
+            self.rt_tree.heading(col, text=text)
+            self.rt_tree.column(col, width=w, anchor="w")
+        sb = ttk.Scrollbar(b1, command=self.rt_tree.yview)
+        self.rt_tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.rt_tree.pack(fill="both", expand=True)
+        T(self.rt_tree, "The desk's input channels. Pick the ones you want to move onto the mix.")
+        for name in qu_routing.input_names(32):
+            self.rt_tree.insert("", "end", iid=name, values=(name, "?", ""))
+
+        right = ttk.Frame(top)
+        right.pack(side="left", fill="both")
+        c2, b2 = self._card(right, "2  Send them to a mix", "Post-fade, so the channel faders still set the balance.")
+        c2.pack(fill="x")
+        ttk.Label(b2, text="Mix").grid(row=0, column=0, sticky="w")
+        self.rt_mix = tk.StringVar(value="Mix1")
+        T(ttk.Combobox(b2, textvariable=self.rt_mix, values=list(qu_routing.MIX_CODES), state="readonly", width=10),
+          "The mix that collects the channels. Its own PEQ and GEQ then do the feedback work,\n"
+          "so the L+R EQ stays clean.").grid(row=1, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(b2, text="Send level (dB)").grid(row=0, column=1, sticky="w")
+        self.rt_send = tk.DoubleVar(value=0.0)
+        T(ttk.Spinbox(b2, from_=-40, to=10, increment=1, textvariable=self.rt_send, width=6),
+          "How much of each channel goes into the mix. 0 dB = the same level as on its fader.").grid(row=1, column=1, sticky="w")
+        self.rt_post = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(b2, text="Post-fade", variable=self.rt_post, style="Switch.TCheckbutton"),
+          "On: the send follows the channel fader (what you want here).\nOff: pre-fade, the send ignores the fader.").grid(
+            row=2, column=0, sticky="w", pady=(8, 0))
+        self.rt_offlr = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(b2, text="Take them off L+R", variable=self.rt_offlr, style="Switch.TCheckbutton"),
+          "Unassigns the channels from L+R, so they only reach the PA through the mix and its return.").grid(
+            row=2, column=1, sticky="w", pady=(8, 0))
+
+        c3, b3 = self._card(right, "3  Bring the mix back",
+                            "Patch the mix output to a socket and cable it into a spare input (or loop it through USB). "
+                            "That input goes on L+R.")
+        c3.pack(fill="x", pady=(8, 0))
+        ttk.Label(b3, text="Return input").grid(row=0, column=0, sticky="w")
+        self.rt_ret = tk.StringVar(value="(none)")
+        T(ttk.Combobox(b3, textvariable=self.rt_ret, values=["(none)"] + qu_routing.input_names(32),
+                       state="readonly", width=10),
+          "The input the mix comes back on. It's put on L+R at the fader level you set.\n"
+          "It must not be one of the channels you're sending, or you'll make a loop.").grid(row=1, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(b3, text="Return fader (dB)").grid(row=0, column=1, sticky="w")
+        self.rt_retdb = tk.DoubleVar(value=0.0)
+        T(ttk.Spinbox(b3, from_=-40, to=10, increment=1, textvariable=self.rt_retdb, width=6),
+          "Where the return channel's fader is set.").grid(row=1, column=1, sticky="w")
+        self.rt_mixfader = tk.BooleanVar(value=True)
+        T(ttk.Checkbutton(b3, text="Set the mix master to 0 dB", variable=self.rt_mixfader, style="Switch.TCheckbutton"),
+          "Puts the mix's own master fader at 0 dB so the return comes back at unity.").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        act = ttk.Frame(tab)
+        act.pack(fill="x", pady=(10, 6))
+        T(ttk.Button(act, text="Read from desk", command=self.routing_read),
+          "Asks the desk for its current settings and fills in the On L+R and Sent to columns.\n"
+          "Needs Write to the desk on and the desk IP on the first tab.").pack(side="left")
+        T(ttk.Button(act, text="Send to mix", style="Accent.TButton", command=self.routing_apply, width=14),
+          "Does steps 2 and 3 for the channels you picked. With Write to the desk off, it only shows what it would send.").pack(
+            side="left", padx=8, ipady=4)
+        T(ttk.Button(act, text="Put back on L+R", command=self.routing_undo),
+          "Undo for the picked channels: back on L+R and off the mix.").pack(side="left")
+        T(ttk.Button(act, text="Watch this mix for feedback", command=self.routing_watch),
+          "Fills in the Feedback tab so the suppressor works on this mix's EQ (or the return channel's).\n"
+          "Then set Input ch to the USB channel carrying it, and press Add.").pack(side="right")
+        self.rt_status = ttk.Label(tab, style="Muted.TLabel", wraplength=900, justify="left",
+                                   text="Uses the desk, IP and MIDI channel from the Feedback tab. Qu only.")
+        self.rt_status.pack(anchor="w")
+
+    def _routing_desk(self):
+        """Returns (desk, owned). Reuses the running connection (the Qu takes only one client)."""
+        kind = DESKS[self.desk_var.get()]
+        if kind not in ("qu", "qu-geq", "dry"):
+            raise ValueError("The routing page is for the Qu. Pick a Qu desk on the Feedback tab.")
+        if self.desk is not None and isinstance(self.desk, QuDesk):
+            import copy
+            v = copy.copy(self.desk)          # same connection, but a plain Qu channel view
+            v.__class__, v._owner = QuDesk, False
+            v.parent = getattr(self.desk, "parent", None) or self.desk
+            return v, False
+        apply = self.apply_var.get() and kind != "dry"
+        if apply and not self.host_var.get().strip():
+            raise ValueError("Enter the desk's IP address on the Feedback tab first.")
+        d = QuDesk(self.host_var.get().strip(), "Ip1", midi_channel=self.midi_var.get(), apply=apply,
+                   log=lambda m: self.q.put(("log", m)))
+        if apply:
+            d.check_link()
+        return d, True
+
+    def _routing_picked(self):
+        picked = list(self.rt_tree.selection())
+        if not picked:
+            raise ValueError("Pick at least one channel in the list.")
+        return picked
+
+    def _routing_done(self, desk, owned, msg):
+        self.rt_status.configure(text=msg)
+        self.log(f"[routing] {msg}")
+        if owned:
+            self.root.after(800, desk.close)
+
+    def routing_read(self):
+        try:
+            desk, owned = self._routing_desk()
+            if not desk.apply:
+                raise ValueError("Turn on Write to the desk (Feedback tab) so the app can talk to the desk.")
+        except Exception as e:
+            messagebox.showerror(APP, str(e))
+            return
+        self.rt_status.configure(text="Reading from the desk...")
+
+        def work():
+            try:
+                desk.check_link()
+                time.sleep(2.5)  # the desk streams every parameter after the state reply
+                self.q.put(("call", lambda: self._show_routing(desk, owned)))
+            except Exception as e:
+                self.q.put(("call", lambda: self._routing_done(desk, owned, f"Read failed: {e}")))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_routing(self, desk, owned):
+        p = desk.params
+        n = 0
+        for name in qu_routing.input_names(32):
+            from feedback.desks import qu_channel_code
+            ch = qu_channel_code(name)
+            lr = p.get(ch, qu_routing.ID_LR)
+            sends = [m for m, code in qu_routing.MIX_CODES.items() if p.get(ch, qu_routing.ID_ASSIGN, code)]
+            if lr is not None:
+                n += 1
+            self.rt_tree.item(name, values=(name, "?" if lr is None else ("yes" if lr else "no"), ", ".join(sends)))
+        self.rt_lr_vx = p.lr_vx()
+        self._routing_done(desk, owned, f"Read {n} channels from the desk." if n else
+                           "The desk didn't report any routing. Check Write to the desk and the IP.")
+
+    def routing_apply(self):
+        try:
+            picked = self._routing_picked()
+            ret = self.rt_ret.get()
+            if ret in picked:
+                raise ValueError(f"{ret} is the return input, so it can't also be sent to the mix (that makes a loop).")
+            mix = self.rt_mix.get()
+            live = self.apply_var.get() and DESKS[self.desk_var.get()] != "dry"
+            if live and not messagebox.askyesno(APP, f"Send {', '.join(picked)} to {mix} "
+                                                f"({'post' if self.rt_post.get() else 'pre'}-fade)"
+                                                f"{' and take them off L+R' if self.rt_offlr.get() else ''}?"):
+                return
+            desk, owned = self._routing_desk()
+            vx = getattr(self, "rt_lr_vx", 0x07)
+            qu_routing.route_to_mix(desk, picked, mix, float(self.rt_send.get()), self.rt_post.get(),
+                                    self.rt_offlr.get(), lr_vx=vx)
+            if self.rt_mixfader.get():
+                desk.view(mix if mix in ("Mix1", "Mix2", "Mix3", "Mix4") else hex(qu_routing.MIX_CODES[mix])).set_fader(0.0)
+            if ret != "(none)":
+                qu_routing.set_return(desk, ret, True, vx, float(self.rt_retdb.get()))
+        except Exception as e:
+            messagebox.showerror(APP, f"{type(e).__name__}: {e}")
+            return
+        for name in picked:
+            vals = self.rt_tree.item(name, "values")
+            self.rt_tree.item(name, values=(name, "no" if self.rt_offlr.get() else vals[1], mix))
+        self._routing_done(desk, owned, f"{'Sent' if desk.apply else 'Dry run: would send'} {', '.join(picked)} to {mix}"
+                           + (f", back on {ret}" if ret != "(none)" else "") + ". Check the desk's routing screen.")
+
+    def routing_undo(self):
+        try:
+            picked = self._routing_picked()
+            desk, owned = self._routing_desk()
+            qu_routing.restore_to_lr(desk, picked, self.rt_mix.get(), getattr(self, "rt_lr_vx", 0x07))
+        except Exception as e:
+            messagebox.showerror(APP, f"{type(e).__name__}: {e}")
+            return
+        for name in picked:
+            self.rt_tree.item(name, values=(name, "yes", ""))
+        self._routing_done(desk, owned, f"{', '.join(picked)} back on L+R and off {self.rt_mix.get()}.")
+
+    def routing_watch(self):
+        mix = self.rt_mix.get()
+        target = mix if mix in ("Mix1", "Mix2", "Mix3", "Mix4") else hex(qu_routing.MIX_CODES[mix])
+        self.target_var.set(target)
+        self.nb.select(0)
+        self.rt_status.configure(text=f"Feedback tab: target set to {target}. Set Input ch and press Add / update.")
 
     # ------------------------------------------------------------- analyser
     RTA_LO, RTA_HI, RTA_TOP, RTA_BOT = 20.0, 20000.0, 0.0, -90.0
@@ -995,8 +1191,8 @@ class App:
                 kind, val = self.q.get_nowait()
                 if kind == "log":
                     self.log(val)
-                elif kind == "notches":
-                    pass
+                elif kind == "call":
+                    val()
         except queue.Empty:
             pass
         if self.running or self.ringout:
@@ -1123,6 +1319,11 @@ def smoke_drive(root):
     for k, v in (("start_db", -20), ("max_db", -15), ("step_s", 0.5)):
         app.ro_vars[k].set(v)
     root.after(500, app.toggle_ringout)
+    def try_routing():
+        app.rt_tree.selection_set(("Ip3", "Ip4"))
+        app.rt_ret.set("Ip16")
+        app.routing_apply()
+    root.after(1000, try_routing)
     root.after(3500, lambda: app.nb.select(1))  # CI screenshots: feedback tab, then the analyser
     root.after(7000, app.stop)
     return app
@@ -1147,7 +1348,8 @@ def main():
 
         def done():
             text = app.log_txt.get("1.0", "end")
-            problems = [w for w in ("Started: in 1 -> Ip1, in 2 -> Mix1", "[ring-out] Mix1", "Saved cuts")
+            problems = [w for w in ("Started: in 1 -> Ip1, in 2 -> Mix1", "[ring-out] Mix1", "Saved cuts",
+                                    "[routing] Dry run: would send Ip3, Ip4 to Mix1")
                         if w not in text]
             if "error:" in text:
                 problems.append("an error was logged")

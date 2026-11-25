@@ -179,6 +179,8 @@ class QuDesk:
         self.desk_midi_channel = None
         self._state_reply = threading.Event()
         self._rx = b""
+        from .qu_routing import NrpnParser
+        self.params = NrpnParser()   # everything the desk reports (filled by "Get System State")
         if apply:
             self.sock = socket.create_connection((host, self.PORT), timeout=5)
             self.sock.settimeout(None)
@@ -219,6 +221,7 @@ class QuDesk:
                 if not chunk:
                     self.log("[qu] the desk closed the connection")
                     return
+                self.params.feed(chunk)
                 self._rx = (self._rx + chunk)[-8192:]
                 i = self._rx.find(AH_HDR + bytes([0x7F, 0x11]))
                 if i < 0:

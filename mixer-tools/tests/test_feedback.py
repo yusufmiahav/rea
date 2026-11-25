@@ -68,7 +68,7 @@ class NotchTests(unittest.TestCase):
         now = [0.0]
         m = NotchManager(NotchConfig(bands=[2, 3], total_cut_db=99, release_after_s=0), clock=lambda: now[0])
         act, n = m.handle(1000.0)
-        self.assertEqual((act, n.gain_db, round(n.width_oct, 3)), ("new", -4.0, 0.167))   # gentle start
+        self.assertEqual((act, n.gain_db, round(n.width_oct, 3)), ("new", -4.0, 0.25))   # gentle start
         self.assertEqual(m.handle(1005.0)[0], "cooldown")
         now[0] = 2
         act, n = m.handle(1010.0)
@@ -77,7 +77,7 @@ class NotchTests(unittest.TestCase):
         self.assertEqual(n.freq_hz, 1000.0)              # and the band stays where it was
         for t in range(2, 30):
             now[0] = 2 * t; m.handle(1000.0)
-        self.assertLessEqual(n.width_oct, 0.5)           # never wider than half an octave
+        self.assertLessEqual(n.width_oct, 2 / 3)         # never wider than 2/3 octave
         now[0] = 100
         self.assertEqual(m.handle(1000.0)[0], "max")
         self.assertEqual(m.handle(3000.0)[0], "new")
@@ -241,12 +241,28 @@ class DeskEncodingTests(unittest.TestCase):
         self.assertEqual(d._faders, {})
         self.assertEqual(out[1].count("B0 62 70"), len(c))
 
+    def test_geq_has_no_zig_zag(self):
+        from feedback.desks import QU_GEQ_FREQS
+        from feedback.notches import geq_curve, smooth_geq
+        # The pattern from the desk photo: alternating deep and shallow faders.
+        zig = {i: (-9.0 if i % 2 else -4.0) for i in range(9, 29)}
+        s = smooth_geq(zig, 28)
+        for i in range(10, 28):   # every fader between two deeper ones is brought onto the line
+            self.assertLessEqual(s[i], max(s[i - 1], s[i + 1]) + 1e-9, s)
+        # Two cuts an octave apart join into one shape, and no step is bigger than 4 dB.
+        c = geq_curve([Notch(band=17, freq_hz=1250.0, gain_db=-12.0, width_oct=1 / 3),
+                       Notch(band=20, freq_hz=2500.0, gain_db=-12.0, width_oct=1 / 3)], QU_GEQ_FREQS)
+        vals = [c.get(i, 0.0) for i in range(1, 29)]
+        self.assertTrue(all(abs(a - b) <= 4.0 for a, b in zip(vals, vals[1:])), vals)
+        self.assertLessEqual(c[18], -8.0)
+        self.assertLessEqual(c[19], -8.0)
+
     def test_geq_reaches_full_depth_between_faders(self):
         from feedback.desks import QU_GEQ_FREQS
         from feedback.notches import geq_curve
         c = geq_curve([Notch(band=20, freq_hz=2700.0, gain_db=-12.0, width_oct=1 / 3)], QU_GEQ_FREQS)
         self.assertEqual(c[20], -12.0)
-        self.assertLess(c[21], c[19])  # 3.15 k is nearer to 2.7 k than 2 k is, so it is cut more
+        self.assertLessEqual(c[21], c[19])  # 3.15 k is nearer to 2.7 k than 2 k is, so it is cut more
 
     def test_geq_manager_picks_nearest_fader(self):
         from feedback.desks import QU_GEQ_FREQS
@@ -314,6 +330,34 @@ class ClosedLoopTests(unittest.TestCase):
             self.assertTrue(desk.log, f"{freq} Hz: no notch placed")
             excess = rms_db(mic[-2 * SR:]) - rms_db(src[-2 * SR:])
             self.assertLess(excess, 3.0, f"{freq} Hz still howling (+{excess:.1f} dB), notches {desk.log}")
+
+
+class QuRoutingTests(unittest.TestCase):
+    def test_parser_reads_nrpn_with_running_status(self):
+        from feedback.qu_routing import NrpnParser
+        p = NrpnParser()
+        # LR assign on Ip1 (VX 07), then running status for Ip2's send to Mix1, with active sensing mixed in.
+        p.feed(bytes.fromhex("B0 63 20 B0 62 18 B0 06 01 B0 26 07 FE B0 63 21 62 20 06 62 26 60".replace(" ", "")))
+        p.feed(bytes.fromhex("F0 00 00 1A 50 11 01 00 00 14 F7".replace(" ", "")))
+        self.assertEqual(p.get(0x20, 0x18), 1)
+        self.assertEqual(p.get(0x21, 0x20, 0x60), 0x62)
+        self.assertEqual(p.lr_vx(), 0x07)
+
+    def test_route_to_mix_messages(self):
+        from feedback.qu_routing import restore_to_lr, route_to_mix, set_return
+        out = []
+        d = QuDesk(None, "Ip1", log=out.append)
+        n = route_to_mix(d, ["Ip3", "Ip4"], "Mix2", send_db=0.0)
+        self.assertEqual(n, 8)
+        self.assertIn("B0 63 22 B0 62 55 B0 06 01 B0 26 61", out[0])   # Ip3 assigned to Mix2
+        self.assertIn("B0 62 50 B0 06 00 B0 26 61", out[0])            # post-fade
+        self.assertIn("B0 62 20 B0 06 62 B0 26 61", out[0])            # send 0 dB
+        self.assertIn("B0 62 18 B0 06 00 B0 26 07", out[0])            # off L+R
+        self.assertIn("B0 63 23", out[1])                               # Ip4
+        restore_to_lr(d, ["Ip3"], "Mix2")
+        self.assertIn("B0 62 18 B0 06 01 B0 26 07", out[2])
+        set_return(d, "Ip16")
+        self.assertIn("B0 63 2F B0 62 18 B0 06 01", out[3])
 
 
 class RtaTests(unittest.TestCase):
