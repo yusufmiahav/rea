@@ -92,3 +92,37 @@ class NotchManager:
 
     def load_json(self, text: str):
         self.notches = {d["band"]: Notch(**d) for d in json.loads(text)}
+
+
+class GeqManager(NotchManager):
+    """Like NotchManager, but for a graphic EQ: each howl goes on the nearest fixed fader.
+    cfg.bands is ignored; cfg.max_faders limits how many faders it may pull down."""
+
+    def __init__(self, freqs, config: NotchConfig | None = None, max_faders=6, clock=time.monotonic):
+        super().__init__(config, clock)
+        self.freqs = list(freqs)
+        self.max_faders = max_faders
+
+    def free_bands(self):
+        return []
+
+    def handle(self, freq_hz: float):
+        now = self.clock()
+        c = self.cfg
+        idx = min(range(len(self.freqs)), key=lambda i: abs(math.log2(freq_hz / self.freqs[i])))
+        band = idx + 1
+        n = self.notches.get(band)
+        if n is not None:
+            if now - n.changed_at < c.cooldown_s:
+                return "cooldown", n
+            if n.gain_db <= c.max_depth_db:
+                return "max", n
+            n.gain_db = max(c.max_depth_db, n.gain_db + c.step_db)
+            n.hits += 1
+            n.changed_at = now
+            return "deeper", n
+        if len(self.notches) >= self.max_faders:
+            return "full", None
+        n = Notch(band=band, freq_hz=self.freqs[idx], gain_db=c.start_depth_db, width_oct=1 / 3, changed_at=now)
+        self.notches[band] = n
+        return "new", n

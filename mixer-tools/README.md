@@ -58,12 +58,20 @@ python feedback_suppressor.py clear --desk qu --host ... --target Ip1 --bands 1,
 (Qu) or RCP lines (DM7) it would send. On Ctrl+C, `live` saves its notches to `notches.json`, and
 `--load notches.json` puts them back next time. You can use that to ring out a system before the show.
 
-Targets and bands:
+Targets and bands (band numbers are 1-4, the same as on the desk):
 
-- **Qu:** `Ip1`–`Ip32`, `ST1`–`ST3`, `Mix1`–`Mix4`, `LR` (or a raw code such as `0x64`). Bands are
-  0 = LF, 1 = LM, 2 = HM, 3 = HF. The default is 1 and 2. If you use LF or HF, the tool switches
-  that band to bell first.
-- **DM7:** `InCh:0`, `Mix:3`, `Mtrx:1` (0-based). Bands are 0–3. The default is 1 and 2.
+- **Qu PEQ** (`--desk qu`): targets `Ip1`–`Ip32`, `ST1`–`ST3`, `Mix1`–`Mix4`, `LR` (or a raw code
+  such as `0x64`). Bands are 1 = LF, 2 = LM, 3 = HM, 4 = HF, and the default is 2,3. If you use LF
+  or HF, the tool switches that band to bell first.
+- **Qu GEQ** (`--desk qu-geq`): only on mixes and LR (`Mix1`–`Mix4`, `LR`). Each howl pulls down
+  the nearest of the 28 graphic faders (31.5 Hz–16 kHz), using at most 6 faders.
+- **DM7** (`--desk dm7`): targets `InCh:0`, `Mix:3`, `Mtrx:1` (0-based). Bands are 1-4, and the
+  default is 2,3.
+
+When you write to the desk, it first asks the desk for its state. On a Qu that also tells it the
+desk's MIDI channel, which it then uses. Every message sent is shown in the log as `[qu sent]` or
+`[dm7 sent]`. Peaks quieter than −50 dBFS (adjustable) are ignored, because those are usually hum
+or room tone, not feedback.
 
 Wedge feedback is usually the problem, so point it at the wedge's mix (Qu `Mix1`, DM7 `Mix:0`) and
 feed it that mix's output.

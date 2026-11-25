@@ -14,17 +14,18 @@ except ImportError:  # tool mode and self-test work without Tk
 
 import numpy as np
 
-from feedback.desks import DryRun, Dm7Desk, QuDesk, load_calibration
+from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, load_calibration
 from feedback.detector import DetectorConfig
-from feedback.notches import NotchConfig
+from feedback.notches import GeqManager, NotchConfig
 from feedback.suppressor import Suppressor
 
 APP = "Mixer Tools"
 STATE_DIR = os.path.join(os.path.expanduser("~"), "MixerTools")
 SETTINGS = os.path.join(STATE_DIR, "settings.json")
 NOTCHES = os.path.join(STATE_DIR, "notches.json")
-DESKS = {"Dry run (no desk)": "dry", "Allen & Heath Qu-16": "qu", "Yamaha DM7": "dm7"}
-MAX_DEPTH = {"dry": -12.0, "qu": -12.0, "dm7": -18.0}
+DESKS = {"Dry run (no desk)": "dry", "Qu-16 PEQ (any channel or mix)": "qu",
+         "Qu-16 GEQ (mixes and LR only)": "qu-geq", "Yamaha DM7 PEQ": "dm7"}
+MAX_DEPTH = {"dry": -12.0, "qu": -12.0, "qu-geq": -12.0, "dm7": -18.0}
 
 
 class QueueWriter:
@@ -57,6 +58,7 @@ class App:
         self.blocks = queue.Queue(maxsize=200)
         self.peak_db = -120.0
         self.devices = []
+        self.mode = "dry"
         self._build()
         self._load_settings()
         self.refresh_devices()
@@ -94,21 +96,22 @@ class App:
         desk = ttk.LabelFrame(top, text="Desk")
         desk.pack(fill="x", **pad)
         self.desk_var = tk.StringVar(value=list(DESKS)[0])
-        ttk.Combobox(desk, textvariable=self.desk_var, values=list(DESKS), state="readonly", width=22).grid(row=0, column=0, **pad)
+        ttk.Combobox(desk, textvariable=self.desk_var, values=list(DESKS), state="readonly", width=30).grid(row=0, column=0, **pad)
         ttk.Label(desk, text="IP").grid(row=0, column=1, sticky="e")
         self.host_var = tk.StringVar()
         ttk.Entry(desk, textvariable=self.host_var, width=16).grid(row=0, column=2, **pad)
         ttk.Label(desk, text="Target").grid(row=0, column=3, sticky="e")
         self.target_var = tk.StringVar(value="Ip1")
         ttk.Entry(desk, textvariable=self.target_var, width=10).grid(row=0, column=4, **pad)
-        ttk.Label(desk, text="EQ bands").grid(row=0, column=5, sticky="e")
-        self.bands_var = tk.StringVar(value="1,2")
+        ttk.Label(desk, text="PEQ bands").grid(row=0, column=5, sticky="e")
+        self.bands_var = tk.StringVar(value="2,3")
         ttk.Entry(desk, textvariable=self.bands_var, width=8).grid(row=0, column=6, **pad)
         ttk.Label(desk, text="Qu MIDI ch").grid(row=1, column=1, sticky="e")
         self.midi_var = tk.IntVar(value=1)
         ttk.Spinbox(desk, from_=1, to=16, textvariable=self.midi_var, width=5).grid(row=1, column=2, sticky="w", **pad)
-        ttk.Label(desk, text="Target: Qu Ip1 / ST1 / Mix1 / LR    DM7 InCh:0 / Mix:3 (0-based)",
-                  foreground="#666").grid(row=1, column=3, columnspan=4, sticky="w", **pad)
+        ttk.Label(desk, text="Target: Qu Ip1 / ST1 / Mix1 / LR    DM7 InCh:0 / Mix:3 (0-based)\n"
+                             "PEQ bands 1-4 as on the desk: 1=LF 2=LM 3=HM 4=HF (GEQ mode ignores this)",
+                  foreground="#666", justify="left").grid(row=1, column=3, columnspan=4, sticky="w", **pad)
         self.apply_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(desk, text="Write to the desk (off = only show what it would send)",
                         variable=self.apply_var).grid(row=2, column=0, columnspan=7, sticky="w", **pad)
@@ -120,6 +123,11 @@ class App:
         ttk.Scale(tune, from_=24, to=10, variable=self.sens_var, length=220).grid(row=0, column=1, **pad)
         ttk.Label(tune, text="(left = only loud, obvious howls; right = catches them earlier)",
                   foreground="#666").grid(row=0, column=2, sticky="w", **pad)
+        ttk.Label(tune, text="Ignore below (dBFS)").grid(row=1, column=0, **pad)
+        self.floor_var = tk.IntVar(value=-50)
+        ttk.Spinbox(tune, from_=-90, to=-10, increment=5, textvariable=self.floor_var, width=6).grid(row=1, column=1, sticky="w", **pad)
+        ttk.Label(tune, text="(quiet steady tones such as hum sit below this and are ignored)",
+                  foreground="#666").grid(row=1, column=2, sticky="w", **pad)
 
         btns = ttk.Frame(tab)
         btns.pack(fill="x", **pad)
@@ -159,7 +167,9 @@ class App:
         if not self.sup:
             return
         for n in sorted(self.sup.manager.notches.values(), key=lambda n: n.band):
-            self.notch_list.insert("end", f"band {n.band}  {n.freq_hz:8.1f} Hz  {n.gain_db:+5.1f} dB")
+            label = f"GEQ {n.freq_hz:g} Hz" if self.mode == "qu-geq" else \
+                f"{QU_BAND_NAMES.get(n.band, n.band) if self.mode == 'qu' else 'band ' + str(n.band)}  {n.freq_hz:8.1f} Hz"
+            self.notch_list.insert("end", f"{label}  {n.gain_db:+5.1f} dB")
 
     # ------------------------------------------------------------ devices
     def refresh_devices(self):
@@ -180,13 +190,16 @@ class App:
     # ---------------------------------------------------------- run/stop
     def _make_desk(self, kind, apply):
         host, target = self.host_var.get().strip(), self.target_var.get().strip()
+        log = lambda m: self.q.put(("log", m))
+        if kind == "qu-geq":
+            return QuGeqDesk(host, target, midi_channel=self.midi_var.get(), apply=apply, log=log)
         if kind == "qu":
             cal = os.path.join(STATE_DIR, "qu-calibration.json")
-            return QuDesk(host, target, midi_channel=self.midi_var.get(), apply=apply,
+            return QuDesk(host, target, midi_channel=self.midi_var.get(), apply=apply, log=log,
                           calibration=load_calibration(cal) if os.path.exists(cal) else None)
         if kind == "dm7":
-            return Dm7Desk(host, target, apply=apply)
-        return DryRun(target or "(none)")
+            return Dm7Desk(host, target, apply=apply, log=log)
+        return DryRun(target or "(none)", log=log)
 
     def toggle(self):
         if self.running:
@@ -206,21 +219,29 @@ class App:
             messagebox.showerror(APP, "No audio input selected.")
             return
         try:
-            bands = [int(b) for b in self.bands_var.get().split(",") if b.strip()]
+            bands = [int(b) for b in self.bands_var.get().replace(" ", "").split(",") if b]
+            self.desk = None
+            if kind in ("qu", "dm7"):
+                (QuDesk if kind == "qu" else Dm7Desk).check_bands(bands)
+            self.mode = kind
             self.desk = self._make_desk(kind, apply)
+            link = self.desk.check_link()
+            self.log(f"Desk link OK: {link}")
             dev_index = int(self.dev_var.get().split(":", 1)[0])
             info = dict(self.devices)[dev_index]
             sr = int(info["default_samplerate"]) or 48000
             chan = self.chan_var.get() - 1
             if chan >= info["max_input_channels"]:
                 raise ValueError(f"that device has {info['max_input_channels']} input channels")
-            self.sup = Suppressor(self.desk, DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get()),
-                                  NotchConfig(bands=bands, max_depth_db=MAX_DEPTH[kind]),
-                                  log=lambda m: self.q.put(("log", m)))
+            ncfg = NotchConfig(bands=bands, max_depth_db=MAX_DEPTH[kind])
+            manager = GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq" else None
+            self.sup = Suppressor(self.desk, DetectorConfig(sample_rate=sr, papr_db=self.sens_var.get(),
+                                                            floor_db=float(self.floor_var.get())),
+                                  ncfg, log=lambda m: self.q.put(("log", m)), manager=manager)
             self.sup.frozen = self.freeze_var.get()
-            if os.path.exists(NOTCHES) and messagebox.askyesno(APP, "Put back the notches from last time?"):
-                with open(NOTCHES, encoding="utf-8") as f:
-                    self.sup.manager.load_json(f.read())
+            saved = self._read_saved_notches(kind)
+            if saved and messagebox.askyesno(APP, "Put back the notches from last time?"):
+                self.sup.manager.load_json(json.dumps(saved))
                 for n in self.sup.manager.notches.values():
                     self.desk.set_notch(n)
 
@@ -251,6 +272,18 @@ class App:
         self.log("Started")
         self._save_settings()
 
+    def _read_saved_notches(self, kind):
+        try:
+            with open(NOTCHES, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return None
+        # Files from the first version used different band numbers: ignore them.
+        if not isinstance(data, dict) or data.get("version") != 2 or data.get("mode") != kind \
+                or data.get("target") != self.target_var.get():
+            return None
+        return data.get("notches") or None
+
     def _worker(self):
         while self.running:
             try:
@@ -260,7 +293,7 @@ class App:
             try:
                 self.sup.process(x)
             except Exception as e:
-                self.q.put(("log", f"error: {e}"))
+                self.q.put(("log", f"error: {type(e).__name__}: {e}"))
             self.q.put(("notches", None))
 
     def stop(self):
@@ -271,7 +304,8 @@ class App:
         if self.sup:
             os.makedirs(STATE_DIR, exist_ok=True)
             with open(NOTCHES, "w", encoding="utf-8") as f:
-                f.write(self.sup.manager.to_json())
+                json.dump({"version": 2, "mode": self.mode, "target": self.target_var.get(),
+                           "notches": json.loads(self.sup.manager.to_json())}, f, indent=2)
             self.log(f"Saved notches to {NOTCHES}")
         if self.desk:
             self.desk.close()
@@ -302,7 +336,7 @@ class App:
             raw = run_loop(src, sr, None, SimDesk(sr))
             desk = SimDesk(sr)
             clock = [0.0]
-            sup = Suppressor(desk, DetectorConfig(sample_rate=sr), NotchConfig(bands=[0, 1, 2, 3]),
+            sup = Suppressor(desk, DetectorConfig(sample_rate=sr), NotchConfig(bands=[1, 2, 3, 4]),
                              clock=lambda: clock[0], log=lambda m: self.q.put(("log", m)))
 
             class Timed:
@@ -331,7 +365,8 @@ class App:
         ("DM7: set one parameter (CHANGES THE DESK)", "dm7 set {host} MIXER:Current/InCh/Fader/Level 0 0 -32768"),
         ("DM7: raw RCP line", 'dm7 raw {host} "devinfo productname"'),
         ("DM7: listen for discovery multicast (30 s)", "dm7 multicast --seconds 30"),
-        ("Feedback: one manual test notch (dry run)", "feedback notch --desk qu --target Ip1 --band 2 --freq 2500 --gain -6"),
+        ("Feedback: one manual test notch (dry run)", "feedback notch --desk qu --target Ip1 --band 3 --freq 2500 --gain -6"),
+        ("Feedback: one test GEQ cut on Mix1 (dry run; add --apply --host IP to send)", "feedback notch --desk qu-geq --target Mix1 --band 20 --freq 2500 --gain -6"),
     ]
 
     def _build_tools(self, tab):
@@ -450,7 +485,7 @@ class App:
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
-                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens")}
+                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor")}
         with open(SETTINGS, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
@@ -459,6 +494,10 @@ class App:
             with open(SETTINGS, encoding="utf-8") as f:
                 data = json.load(f)
             for k, v in data.items():
+                if k == "desk" and v not in DESKS:
+                    continue  # desk names changed between versions
+                if k == "bands" and v.replace(" ", "") in ("1,2",):
+                    v = "2,3"  # old default (0-based LM,HM) -> new 1-based numbers
                 getattr(self, k + "_var").set(v)
         except (OSError, ValueError, AttributeError):
             pass

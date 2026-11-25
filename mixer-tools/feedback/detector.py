@@ -28,7 +28,7 @@ class DetectorConfig:
     hop_size: int = 1024          # ~21 ms per frame at 48 kHz
     min_freq: float = 60.0
     max_freq: float = 16000.0
-    floor_db: float = -70.0       # ignore peaks quieter than this (dBFS)
+    floor_db: float = -50.0       # ignore peaks quieter than this (dBFS); hum and room tone sit below
     papr_db: float = 16.0         # peak over mean spectrum power
     pnpr_db: float = 12.0         # peak over neighbours a few bins away
     phpr_db: float = 15.0         # peak over its 2nd/3rd harmonic

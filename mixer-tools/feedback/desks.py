@@ -31,14 +31,22 @@ from .notches import Notch, octaves_to_q
 class DryRun:
     name = "dry-run"
 
-    def __init__(self, target="(none)"):
+    def __init__(self, target="(none)", log=print):
         self.target = target
+        self.log = log
+
+    @staticmethod
+    def check_bands(bands):
+        pass
+
+    def check_link(self, timeout=3.0):
+        return "dry run"
 
     def set_notch(self, n: Notch):
-        print(f"[dry-run] {self.target} band {n.band}: {n.freq_hz:7.1f} Hz  {n.gain_db:+.1f} dB  {n.width_oct:.3f} oct")
+        self.log(f"[dry-run] {self.target} band {n.band}: {n.freq_hz:7.1f} Hz  {n.gain_db:+.1f} dB  {n.width_oct:.3f} oct")
 
     def clear_notch(self, band):
-        print(f"[dry-run] {self.target} band {band}: flat")
+        self.log(f"[dry-run] {self.target} band {band}: flat")
 
     def close(self):
         pass
@@ -47,12 +55,20 @@ class DryRun:
 # ---------------------------------------------------------------------------
 # Allen & Heath Qu-16 / 24 / 32 / Pac / SB
 # ---------------------------------------------------------------------------
-QU_BANDS = {  # band id -> (gain ID, freq ID, width ID, type ID or None)
-    0: (0x01, 0x02, 0x03, 0x04),  # LF (set to bell when used)
-    1: (0x05, 0x06, 0x07, None),  # LM
-    2: (0x09, 0x0A, 0x0B, None),  # HM
-    3: (0x0D, 0x0E, 0x0F, 0x10),  # HF (set to bell when used)
+QU_BANDS = {  # band number as shown on the desk -> (gain ID, freq ID, width ID, type ID or None)
+    1: (0x01, 0x02, 0x03, 0x04),  # LF (set to bell when used)
+    2: (0x05, 0x06, 0x07, None),  # LM
+    3: (0x09, 0x0A, 0x0B, None),  # HM
+    4: (0x0D, 0x0E, 0x0F, 0x10),  # HF (set to bell when used)
 }
+QU_BAND_NAMES = {1: "LF", 2: "LM", 3: "HM", 4: "HF"}
+# Qu GEQ: 28 faders, VX 00..1B, per the Qu MIDI Protocol V1.9 reference table.
+QU_GEQ_FREQS = [31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400, 500, 630, 800, 1000, 1250,
+                1600, 2000, 2500, 3150, 4000, 5000, 6300, 8000, 10000, 12500, 16000]
+QU_GEQ_GAIN = 0x70
+QU_GEQ_IN = 0x71
+AH_HDR = bytes([0xF0, 0x00, 0x00, 0x1A, 0x50, 0x11, 0x01, 0x00])
+QU_BOX_IDS = {1: "Qu-16", 2: "Qu-24", 3: "Qu-32", 4: "Qu-Pac", 5: "Qu-SB"}
 QU_PEQ_IN = 0x11
 QU_PEQ_VX = 0x07
 
@@ -114,18 +130,43 @@ class QuDesk:
     name = "qu"
     PORT = 51325
 
-    def __init__(self, host, target, midi_channel=1, apply=False, calibration=None):
+    def __init__(self, host, target, midi_channel=1, apply=False, calibration=None, log=print):
         self.ch = qu_channel_code(target)
         self.target = target
         self.status = 0xB0 | ((midi_channel - 1) & 0x0F)
         self.scale = QuScale(calibration)
         self.apply = apply
+        self.log = log
         self.sock = None
         self.stop = threading.Event()
+        self.box = None
+        self.desk_midi_channel = None
+        self._state_reply = threading.Event()
+        self._rx = b""
         if apply:
             self.sock = socket.create_connection((host, self.PORT), timeout=5)
+            self.sock.settimeout(None)
             threading.Thread(target=self._keepalive, daemon=True).start()
             threading.Thread(target=self._drain, daemon=True).start()
+
+    @staticmethod
+    def check_bands(bands):
+        bad = [b for b in bands if b not in QU_BANDS]
+        if bad:
+            raise ValueError(f"Qu PEQ bands are 1-4 (1=LF 2=LM 3=HM 4=HF); got {bad}")
+
+    def check_link(self, timeout=3.0):
+        """Ask the desk for its system state. Returns e.g. 'Qu-16 firmware 1.9.5', or raises."""
+        if not self.apply:
+            return "dry run (not connected)"
+        self._state_reply.clear()
+        self.sock.sendall(AH_HDR + bytes([0x7F, 0x10, 0x00, 0xF7]))
+        if not self._state_reply.wait(timeout):
+            raise ConnectionError("the desk did not answer on TCP 51325. Check the IP, and that no other "
+                                  "MIDI-over-TCP app (A&H MIDI Control, a DAW link) is connected")
+        if self.desk_midi_channel:
+            return f"{self.box}, MIDI channel {self.desk_midi_channel}"
+        return self.box
 
     def _keepalive(self):
         while not self.stop.is_set():
@@ -137,10 +178,32 @@ class QuDesk:
 
     def _drain(self):
         try:
-            while not self.stop.is_set() and self.sock.recv(4096):
-                pass
-        except OSError:
-            pass
+            while not self.stop.is_set():
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    self.log("[qu] the desk closed the connection")
+                    return
+                self._rx = (self._rx + chunk)[-8192:]
+                i = self._rx.find(AH_HDR + bytes([0x7F, 0x11]))
+                if i < 0:
+                    i = self._rx.find(AH_HDR)
+                    while i >= 0 and not (len(self._rx) > i + 10 and self._rx[i + 9] == 0x11):
+                        i = self._rx.find(AH_HDR, i + 1)
+                if i >= 0 and len(self._rx) > i + 10:
+                    end = self._rx.find(b"\xF7", i)
+                    if end > 0:
+                        rest = self._rx[i + 10:end]
+                        dev = self._rx[i + 8]
+                        if dev <= 0x0F:  # the reply carries the desk's own MIDI channel
+                            self.desk_midi_channel = dev + 1
+                            self.status = 0xB0 | dev
+                        name = QU_BOX_IDS.get(rest[0], f"box {rest[0]}") if rest else "Qu"
+                        self.box = f"{name} firmware {'.'.join(str(x) for x in rest[1:])}"
+                        self._rx = self._rx[end + 1:]
+                        self._state_reply.set()
+        except OSError as e:
+            if not self.stop.is_set():
+                self.log(f"[qu] connection error: {e}")
 
     def nrpn(self, pid, va, vx=QU_PEQ_VX) -> bytes:
         s = self.status
@@ -149,9 +212,10 @@ class QuDesk:
     def _send(self, msgs, label):
         data = b"".join(msgs)
         if not self.apply:
-            print(f"[qu dry-run] {self.target} {label}: {data.hex(' ').upper()}")
+            self.log(f"[qu dry-run] {self.target} {label}: {data.hex(' ').upper()}")
             return
         self.sock.sendall(data)
+        self.log(f"[qu sent] {self.target} {label}: {data.hex(' ').upper()}")
 
     def set_notch(self, n: Notch):
         g, f, w, typ = QU_BANDS[n.band]
@@ -160,16 +224,34 @@ class QuDesk:
             msgs.append(self.nrpn(typ, 0x00))  # bell
         msgs += [self.nrpn(f, self.scale.freq(n.freq_hz)), self.nrpn(w, self.scale.width(n.width_oct)),
                  self.nrpn(g, self.scale.gain(n.gain_db)), self.nrpn(QU_PEQ_IN, 0x01, 0x00)]
-        self._send(msgs, f"band {n.band} {n.freq_hz:.1f} Hz {n.gain_db:+.1f} dB")
+        self._send(msgs, f"PEQ {QU_BAND_NAMES[n.band]} {n.freq_hz:.1f} Hz {n.gain_db:+.1f} dB")
 
     def clear_notch(self, band):
         g, _, _, _ = QU_BANDS[band]
-        self._send([self.nrpn(g, self.scale.gain(0.0))], f"band {band} flat")
+        self._send([self.nrpn(g, self.scale.gain(0.0))], f"PEQ {QU_BAND_NAMES[band]} flat")
 
     def close(self):
         self.stop.set()
         if self.sock:
             self.sock.close()
+
+
+class QuGeqDesk(QuDesk):
+    """Cuts on the Qu's 28-band graphic EQ (mixes and LR only). Notch.band is the GEQ
+    fader number 1..28 (31.5 Hz .. 16 kHz)."""
+    name = "qu-geq"
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        if not (0x60 <= self.ch <= 0x67):
+            raise ValueError("the Qu GEQ is on mixes and LR only: use a target such as Mix1 or LR")
+
+    def set_notch(self, n: Notch):
+        msgs = [self.nrpn(QU_GEQ_GAIN, self.scale.gain(n.gain_db), n.band - 1), self.nrpn(QU_GEQ_IN, 0x01, 0x00)]
+        self._send(msgs, f"GEQ {QU_GEQ_FREQS[n.band - 1]:g} Hz {n.gain_db:+.1f} dB")
+
+    def clear_notch(self, band):
+        self._send([self.nrpn(QU_GEQ_GAIN, self.scale.gain(0.0), band - 1)], f"GEQ {QU_GEQ_FREQS[band - 1]:g} Hz flat")
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +261,9 @@ class Dm7Desk:
     name = "dm7"
     PORT = 49280
 
-    def __init__(self, host, target, apply=False):
+    def __init__(self, host, target, apply=False, log=print):
+        self.log = log
+        self.box = None
         kind, _, idx = target.partition(":")
         if kind not in ("InCh", "Mix", "Mtrx") or not idx.isdigit():
             raise ValueError("DM7 target looks like InCh:0, Mix:3 or Mtrx:1 (0-based index)")
@@ -188,6 +272,8 @@ class Dm7Desk:
         self.sock = None
         if apply:
             self.sock = socket.create_connection((host, self.PORT), timeout=5)
+            self.sock.settimeout(None)
+            self._ok = threading.Event()
             for line in ('scpmode encoding "utf8"', "scpmode keepalive 10000", 'scpmode valuetype "raw"'):
                 self._line(line)
             self.stop = threading.Event()
@@ -213,18 +299,38 @@ class Dm7Desk:
                 while b"\n" in buf:
                     line, buf = buf.split(b"\n", 1)
                     if line.startswith(b"ERROR"):
-                        print(f"[dm7] {line.decode(errors='replace')}")
+                        self.log(f"[dm7] {line.decode(errors='replace')}")
+                    elif b"productname" in line and line.startswith(b"OK"):
+                        self.box = line.decode(errors="replace").split("productname", 1)[1].strip().strip('"')
+                        self._ok.set()
         except OSError:
             pass
 
+    @staticmethod
+    def check_bands(bands):
+        bad = [b for b in bands if not 1 <= b <= 4]
+        if bad:
+            raise ValueError(f"DM7 PEQ bands are 1-4; got {bad}")
+
+    def check_link(self, timeout=3.0):
+        if not self.apply:
+            return "dry run (not connected)"
+        self._ok.clear()
+        self.sock.sendall(b"devinfo productname\n")
+        if not self._ok.wait(timeout):
+            raise ConnectionError("the DM7 did not answer on TCP 49280. Check the IP (SETUP > NETWORK > For Mixer Control)")
+        return self.box
+
     def _line(self, line):
         if not self.apply:
-            print(f"[dm7 dry-run] {line}")
+            self.log(f"[dm7 dry-run] {line}")
             return
         self.sock.sendall((line + "\n").encode())
+        self.log(f"[dm7 sent] {line}")
 
     def _set(self, param, band, value):
-        self._line(f"set MIXER:Current/{self.kind}/PEQ/{param} {self.x} {band} {value}")
+        # band is 1-4 as on the desk; RCP's Y index is 0-based
+        self._line(f"set MIXER:Current/{self.kind}/PEQ/{param} {self.x} {band - 1} {value}")
 
     def set_notch(self, n: Notch):
         self._line(f"set MIXER:Current/{self.kind}/PEQ/On {self.x} 0 1")

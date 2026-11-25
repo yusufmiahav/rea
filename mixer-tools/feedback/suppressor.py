@@ -11,10 +11,10 @@ from .notches import NotchConfig, NotchManager
 
 class Suppressor:
     def __init__(self, desk, detector_cfg: DetectorConfig | None = None,
-                 notch_cfg: NotchConfig | None = None, clock=time.monotonic, log=print):
+                 notch_cfg: NotchConfig | None = None, clock=time.monotonic, log=print, manager=None):
         self.desk = desk
         self.detector = FeedbackDetector(detector_cfg)
-        self.manager = NotchManager(notch_cfg, clock=clock)
+        self.manager = manager or NotchManager(notch_cfg, clock=clock)
         self.log = log
         self.frozen = False   # True = keep listening, change nothing (show mode)
         self.history = []

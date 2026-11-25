@@ -12,7 +12,7 @@ Needs Python 3.9+ and numpy. For live input also: pip install sounddevice
   python feedback_suppressor.py live ... --apply         # really writes the EQ
   python feedback_suppressor.py notch --desk dm7 --host 192.168.0.128 --target InCh:0 \\
          --band 1 --freq 2500 --gain -6 --apply          # one manual notch, to check scaling
-  python feedback_suppressor.py clear --desk qu --host ... --target Ip1 --bands 1,2 --apply
+  python feedback_suppressor.py clear --desk qu --host ... --target Ip1 --bands 2,3 --apply
 
 Without --apply nothing touches the desk.
 """
@@ -23,15 +23,16 @@ import time
 import numpy as np
 
 from feedback.audio import live_stream, list_devices, read_wav, write_wav
-from feedback.desks import DryRun, Dm7Desk, QuDesk, load_calibration
+from feedback.desks import QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, load_calibration
 from feedback.detector import DetectorConfig, FeedbackDetector
-from feedback.notches import Notch, NotchConfig
+from feedback.notches import GeqManager, Notch, NotchConfig
 from feedback.suppressor import Suppressor
 
 DESK_DEFAULTS = {  # desk -> (default bands, deepest cut in dB)
-    "qu": ([1, 2], -12.0),   # LM and HM; the Qu PEQ only goes to -12 dB
-    "dm7": ([1, 2], -18.0),
-    "dry": ([1, 2], -12.0),
+    "qu": ([2, 3], -12.0),   # LM and HM; the Qu PEQ only goes to -12 dB
+    "qu-geq": ([], -12.0),   # GEQ: nearest of 28 faders, mixes and LR only
+    "dm7": ([2, 3], -18.0),
+    "dry": ([2, 3], -12.0),
 }
 
 
@@ -39,6 +40,8 @@ def make_desk(a):
     if a.desk == "qu":
         return QuDesk(a.host, a.target, midi_channel=a.midi_channel, apply=a.apply,
                       calibration=load_calibration(a.calibration))
+    if a.desk == "qu-geq":
+        return QuGeqDesk(a.host, a.target, midi_channel=a.midi_channel, apply=a.apply)
     if a.desk == "dm7":
         return Dm7Desk(a.host, a.target, apply=a.apply)
     return DryRun(a.target or "(none)")
@@ -53,7 +56,8 @@ def notch_cfg(a):
 
 
 def det_cfg(a, sr):
-    return DetectorConfig(sample_rate=sr, papr_db=a.papr, persist_s=a.persist)
+    return DetectorConfig(sample_rate=sr, papr_db=a.papr, persist_s=a.persist,
+                          floor_db=getattr(a, "floor", -50.0))
 
 
 def cmd_simulate(a):
@@ -64,7 +68,7 @@ def cmd_simulate(a):
     write_wav("sim-no-control.wav", run_loop(src, sr, None, SimDesk(sr), howl_hz=a.freq, loop_gain_db=a.loop_gain) / 4, sr)
     desk = SimDesk(sr)
     clock = [0.0]
-    sup = Suppressor(desk, DetectorConfig(sample_rate=sr), NotchConfig(bands=[0, 1, 2, 3]), clock=lambda: clock[0])
+    sup = Suppressor(desk, DetectorConfig(sample_rate=sr), NotchConfig(bands=[1, 2, 3, 4]), clock=lambda: clock[0])
 
     class Timed:
         def process(self, b):
@@ -93,7 +97,12 @@ def cmd_devices(a):
 
 def cmd_live(a):
     desk = make_desk(a)
-    sup = Suppressor(desk, det_cfg(a, a.rate), notch_cfg(a))
+    cfg = notch_cfg(a)
+    if a.desk != "qu-geq":
+        desk.check_bands(cfg.bands)
+    print("Desk link:", desk.check_link())
+    manager = GeqManager(QU_GEQ_FREQS, cfg) if a.desk == "qu-geq" else None
+    sup = Suppressor(desk, det_cfg(a, a.rate), cfg, manager=manager)
     if a.load:
         with open(a.load, encoding="utf-8") as f:
             sup.manager.load_json(f.read())
@@ -135,7 +144,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def desk_args(p):
-        p.add_argument("--desk", choices=["dry", "qu", "dm7"], default="dry")
+        p.add_argument("--desk", choices=["dry", "qu", "qu-geq", "dm7"], default="dry")
         p.add_argument("--host", help="desk IP address")
         p.add_argument("--target", default="", help="Qu: Ip1, ST1, Mix1, LR. DM7: InCh:0, Mix:3 (0-based)")
         p.add_argument("--midi-channel", type=int, default=1, help="Qu MIDI channel (Setup > Control > MIDI)")
@@ -143,12 +152,13 @@ def main():
         p.add_argument("--apply", action="store_true", help="really write to the desk")
 
     def tuning(p):
-        p.add_argument("--bands", help="desk EQ bands to use, e.g. 1,2 (Qu: 0=LF 1=LM 2=HM 3=HF)")
+        p.add_argument("--bands", help="PEQ bands to use, 1-4 as on the desk, e.g. 2,3 (Qu: 1=LF 2=LM 3=HM 4=HF)")
         p.add_argument("--start-depth", type=float, default=-6.0)
         p.add_argument("--max-depth", type=float, default=None)
         p.add_argument("--width", type=float, default=1 / 9, help="notch width in octaves")
         p.add_argument("--papr", type=float, default=16.0, help="lower = more sensitive")
         p.add_argument("--persist", type=float, default=0.30, help="seconds a peak must hold")
+        p.add_argument("--floor", type=float, default=-50.0, help="ignore peaks quieter than this (dBFS)")
 
     p = sub.add_parser("simulate"); p.add_argument("--seconds", type=float, default=8)
     p.add_argument("--freq", type=float, default=2000.0); p.add_argument("--loop-gain", type=float, default=1.0)

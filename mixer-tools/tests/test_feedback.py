@@ -66,7 +66,7 @@ class NotchTests(unittest.TestCase):
 
     def test_new_deepen_max_full(self):
         now = [0.0]
-        m = NotchManager(NotchConfig(bands=[1, 2], cooldown_s=0.5), clock=lambda: now[0])
+        m = NotchManager(NotchConfig(bands=[2, 3], cooldown_s=0.5), clock=lambda: now[0])
         self.assertEqual(m.handle(1000.0)[0], "new")
         self.assertEqual(m.handle(1005.0)[0], "cooldown")
         now[0] = 1
@@ -95,11 +95,62 @@ class DeskEncodingTests(unittest.TestCase):
         d = QuDesk(None, "Ip3", midi_channel=2)
         self.assertEqual(d.nrpn(0x0A, 0x50).hex(" "), "b1 63 22 b1 62 0a b1 06 50 b1 26 07")
 
+    def test_qu_bands_are_numbered_like_the_desk(self):
+        out = []
+        d = QuDesk(None, "Ip1", log=out.append)
+        d.set_notch(Notch(band=3, freq_hz=2500.0, gain_db=-6.0, width_oct=1 / 9))  # 3 = HM
+        self.assertIn("PEQ HM", out[0])
+        self.assertIn("B0 62 0A", out[0])  # HM freq ID
+        QuDesk.check_bands([1, 2, 3, 4])
+        with self.assertRaises(ValueError):
+            QuDesk.check_bands([2, 3, 4, 5])
+        with self.assertRaises(ValueError):
+            QuDesk.check_bands([0, 1])
+
+    def test_qu_geq_on_mix(self):
+        from feedback.desks import QuGeqDesk
+        out = []
+        d = QuGeqDesk(None, "Mix1", log=out.append)
+        d.set_notch(Notch(band=20, freq_hz=2500.0, gain_db=-6.0, width_oct=1 / 3))
+        self.assertIn("B0 63 60 B0 62 70 B0 06 20 B0 26 13", out[0])  # Mix1, GEQ gain, -6 dB, fader 20 (VX 13)
+        self.assertIn("B0 62 71 B0 06 01 B0 26 00", out[0])  # GEQ in
+        with self.assertRaises(ValueError):
+            QuGeqDesk(None, "Ip1")
+
+    def test_geq_manager_picks_nearest_fader(self):
+        from feedback.desks import QU_GEQ_FREQS
+        from feedback.notches import GeqManager
+        now = [0.0]
+        m = GeqManager(QU_GEQ_FREQS, NotchConfig(), max_faders=2, clock=lambda: now[0])
+        act, n = m.handle(2600.0)
+        self.assertEqual((act, n.band, n.freq_hz), ("new", 20, 2500))
+        now[0] = 1
+        self.assertEqual(m.handle(2450.0)[0], "deeper")
+        self.assertEqual(m.handle(108.9)[1].band, 6)  # 100 Hz fader
+        self.assertEqual(m.handle(5000.0), ("full", None))
+
+    def test_qu_link_check_reads_box_and_midi_channel(self):
+        import socket, threading
+        from feedback.desks import AH_HDR
+        a, b = socket.socketpair()
+        d = QuDesk(None, "Ip1", log=lambda *_: None)
+        d.apply, d.sock = True, a
+        threading.Thread(target=d._drain, daemon=True).start()
+
+        def desk():
+            req = b.recv(64)
+            assert req == AH_HDR + bytes([0x7F, 0x10, 0x00, 0xF7]), req
+            b.sendall(b"\xFE" + AH_HDR + bytes([0x02, 0x11, 0x01, 0x01, 0x09, 0xF7]))
+        threading.Thread(target=desk, daemon=True).start()
+        self.assertEqual(d.check_link(), "Qu-16 firmware 1.9, MIDI channel 3")
+        self.assertEqual(d.nrpn(0x0A, 0)[0], 0xB2)  # now talks on the desk's channel
+        d.stop.set(); a.close(); b.close()
+
     def test_dm7_lines(self):
         import io, contextlib
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            Dm7Desk(None, "InCh:4").set_notch(Notch(band=2, freq_hz=2500.0, gain_db=-6.0, width_oct=1 / 9))
+            Dm7Desk(None, "InCh:4").set_notch(Notch(band=3, freq_hz=2500.0, gain_db=-6.0, width_oct=1 / 9))
         out = buf.getvalue()
         self.assertIn("set MIXER:Current/InCh/PEQ/Band/Freq 4 2 25000", out)
         self.assertIn("set MIXER:Current/InCh/PEQ/Band/Gain 4 2 -600", out)
@@ -111,7 +162,7 @@ class ClosedLoopTests(unittest.TestCase):
         src = synth.speechlike(seconds, level=0.05)
         clock = [0.0]
         desk = SimDesk(SR)
-        sup = Suppressor(desk, notch_cfg=NotchConfig(bands=[0, 1, 2, 3]), clock=lambda: clock[0], log=lambda *_: None)
+        sup = Suppressor(desk, notch_cfg=NotchConfig(bands=[1, 2, 3, 4]), clock=lambda: clock[0], log=lambda *_: None)
 
         class Timed:
             def process(self, b):
