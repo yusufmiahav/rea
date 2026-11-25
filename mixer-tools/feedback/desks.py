@@ -26,7 +26,7 @@ import socket
 import threading
 import time
 
-from .notches import Notch, geq_curve, octaves_to_q
+from .notches import GEQ_OFFSET, Notch, geq_curve, octaves_to_q
 
 
 class DryRun:
@@ -347,8 +347,25 @@ class QuGeqDesk(QuDesk):
         self._apply_curve(f"{n.freq_hz:.0f} Hz {n.gain_db:+.1f} dB")
 
     def clear_notch(self, band):
-        self._cuts.pop(band, None)
-        self._apply_curve(f"clear {QU_GEQ_FREQS[band - 1]:g} Hz")
+        n = self._cuts.pop(band, None)
+        self._apply_curve(f"clear {n.freq_hz:.0f} Hz" if n else "clear")
+
+
+class QuSplitDesk(QuGeqDesk):
+    """PEQ and GEQ together on a Qu mix or LR. Notch.band 1-4 = PEQ band, GEQ_OFFSET + fader = GEQ."""
+    name = "qu-split"
+
+    def set_notch(self, n: Notch):
+        if n.band >= GEQ_OFFSET:
+            QuGeqDesk.set_notch(self, n)
+        else:
+            QuDesk.set_notch(self, n)
+
+    def clear_notch(self, band):
+        if band >= GEQ_OFFSET:
+            QuGeqDesk.clear_notch(self, band)
+        else:
+            QuDesk.clear_notch(self, band)
 
 
 # ---------------------------------------------------------------------------

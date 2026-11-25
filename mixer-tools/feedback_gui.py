@@ -15,9 +15,9 @@ except ImportError:  # tool mode and self-test work without Tk
 
 import numpy as np
 
-from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, load_calibration
+from feedback.desks import QU_BAND_NAMES, QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, QuSplitDesk, load_calibration
 from feedback.detector import DetectorConfig
-from feedback.notches import GeqManager, NotchConfig, NotchManager
+from feedback.notches import GEQ_OFFSET, GeqManager, NotchConfig, NotchManager, SplitManager
 from feedback import rta
 from feedback import qu_routing
 from feedback.suppressor import Suppressor
@@ -27,8 +27,9 @@ STATE_DIR = os.path.join(os.path.expanduser("~"), "MixerTools")
 SETTINGS = os.path.join(STATE_DIR, "settings.json")
 NOTCHES = os.path.join(STATE_DIR, "notches.json")
 DESKS = {"Dry run (no desk)": "dry", "Qu-16 PEQ (any channel or mix)": "qu",
-         "Qu-16 GEQ (mixes and LR only)": "qu-geq", "Yamaha DM7 PEQ": "dm7"}
-MAX_DEPTH = {"dry": -12.0, "qu": -12.0, "qu-geq": -12.0, "dm7": -18.0}
+         "Qu-16 GEQ (mixes and LR only)": "qu-geq",
+         "Qu-16 PEQ + GEQ together (mixes and LR only)": "qu-split", "Yamaha DM7 PEQ": "dm7"}
+MAX_DEPTH = {"dry": -12.0, "qu": -12.0, "qu-geq": -12.0, "qu-split": -12.0, "dm7": -18.0}
 
 
 class QueueWriter:
@@ -450,7 +451,7 @@ class App:
     def _routing_desk(self):
         """Returns (desk, owned). Reuses the running connection (the Qu takes only one client)."""
         kind = DESKS[self.desk_var.get()]
-        if kind not in ("qu", "qu-geq", "dry"):
+        if kind not in ("qu", "qu-geq", "qu-split", "dry"):
             raise ValueError("The routing page is for the Qu. Pick a Qu desk on the Feedback tab.")
         if self.desk is not None and isinstance(self.desk, QuDesk):
             import copy
@@ -720,7 +721,8 @@ class App:
             cv.create_line(50, y0, w - 50, y0, fill="#1f5c3a", dash=(2, 4))
             if notches:
                 fx = rta.log_centres(per_octave=48)
-                eq = rta.eq_response_db(notches, fx, QU_GEQ_FREQS if self.mode == "qu-geq" else None)
+                eq = rta.eq_response_db(notches, fx, QU_GEQ_FREQS if self.mode in ("qu-geq", "qu-split") else None,
+                                        split=self.mode == "qu-split")
                 cv.create_line(*[p for f, g in zip(fx, eq) for p in (self._rta_x(f, w), self._eq_y(g, h))],
                                fill="#3ddc84", width=3, smooth=True)
                 for n in notches:
@@ -811,10 +813,10 @@ class App:
         for n in sorted(sup.manager.notches.values(), key=lambda n: n.band):
             if n.band == 0:
                 out.append(f"HPF {n.freq_hz:.0f}Hz")
-            elif self.mode == "qu-geq":
-                out.append(f"{n.freq_hz:g}Hz {n.gain_db:+.0f}")
+            elif self.mode == "qu-geq" or n.band >= GEQ_OFFSET:
+                out.append(f"GEQ {n.freq_hz:.0f}Hz {n.gain_db:+.0f}")
             else:
-                name = QU_BAND_NAMES.get(n.band, n.band) if self.mode == "qu" else f"B{n.band}"
+                name = QU_BAND_NAMES.get(n.band, n.band) if self.mode in ("qu", "qu-split") else f"B{n.band}"
                 out.append(f"{name} {n.freq_hz:.0f}Hz {n.gain_db:+.0f}dB {n.width_oct:.2f}oct")
         return ", ".join(out)
 
@@ -857,6 +859,8 @@ class App:
     def _make_desk(self, kind, apply, target):
         host = self.host_var.get().strip()
         log = lambda m: self.q.put(("log", m))
+        if kind == "qu-split":
+            return QuSplitDesk(host, target, midi_channel=self.midi_var.get(), apply=apply, log=log)
         if kind == "qu-geq":
             return QuGeqDesk(host, target, midi_channel=self.midi_var.get(), apply=apply, log=log)
         if kind == "qu":
@@ -894,8 +898,8 @@ class App:
             self.mode = kind
             for r in self.rows:
                 r["band_list"] = [int(b) for b in r["bands"].split(",") if b]
-                if kind in ("qu", "dm7"):
-                    (QuDesk if kind == "qu" else Dm7Desk).check_bands(r["band_list"])
+                if kind in ("qu", "qu-split", "dm7"):
+                    (Dm7Desk if kind == "dm7" else QuDesk).check_bands(r["band_list"])
             dev_index = int(self.dev_var.get().split(":", 1)[0])
             info = dict(self.devices)[dev_index]
             sr = int(info["default_samplerate"]) or 48000
@@ -914,13 +918,21 @@ class App:
                 key = r["target"].lower()
                 if key not in views:
                     views[key] = self.desk.view(r["target"])
-                    use_hpf = self.hpf_var.get() and getattr(views[key], "has_hpf", False) and kind != "qu-geq"
+                    use_hpf = self.hpf_var.get() and getattr(views[key], "has_hpf", False) and kind not in ("qu-geq", "qu-split")
                     ncfg = NotchConfig(bands=r["band_list"], max_depth_db=MAX_DEPTH[kind],
                                        hpf_max_hz=float(self.hpfmax_var.get()) if use_hpf else 0.0,
                                        release_after_s=8.0 if self.recover_var.get() else 0.0,
                                        total_cut_db=24.0 if kind == "qu-geq" else 18.0)
-                    managers[key] = (GeqManager(QU_GEQ_FREQS, ncfg) if kind == "qu-geq"
-                                     else NotchManager(ncfg))
+                    if kind == "qu-split":
+                        # PEQ for the severe, narrow howls; GEQ for the gentler, broader ones.
+                        ncfg.total_cut_db = 15.0
+                        gcfg = NotchConfig(max_depth_db=MAX_DEPTH[kind], total_cut_db=18.0,
+                                           release_after_s=ncfg.release_after_s)
+                        managers[key] = SplitManager(NotchManager(ncfg), GeqManager(QU_GEQ_FREQS, gcfg))
+                    elif kind == "qu-geq":
+                        managers[key] = GeqManager(QU_GEQ_FREQS, ncfg)
+                    else:
+                        managers[key] = NotchManager(ncfg)
                 r["desk"], manager = views[key], managers[key]
                 ncfg = manager.cfg
                 r["howls"] = []
@@ -1031,7 +1043,9 @@ class App:
     def _apply_recover(self):
         for r in self.rows:
             if "sup" in r:
-                r["sup"].manager.cfg.release_after_s = 8.0 if self.recover_var.get() else 0.0
+                m = r["sup"].manager
+                for sub in getattr(m, "managers", [m]):
+                    sub.cfg.release_after_s = 8.0 if self.recover_var.get() else 0.0
 
     def _apply_freeze(self):
         for r in self.rows:

@@ -23,14 +23,15 @@ import time
 import numpy as np
 
 from feedback.audio import live_stream, list_devices, read_wav, write_wav
-from feedback.desks import QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, load_calibration
+from feedback.desks import QU_GEQ_FREQS, DryRun, Dm7Desk, QuDesk, QuGeqDesk, QuSplitDesk, load_calibration
 from feedback.detector import DetectorConfig, FeedbackDetector
-from feedback.notches import GeqManager, Notch, NotchConfig
+from feedback.notches import GeqManager, Notch, NotchConfig, NotchManager, SplitManager
 from feedback.suppressor import Suppressor
 
 DESK_DEFAULTS = {  # desk -> (default bands, deepest cut in dB)
     "qu": ([2, 3], -12.0),   # LM and HM; the Qu PEQ only goes to -12 dB
     "qu-geq": ([], -12.0),   # GEQ: nearest of 28 faders, mixes and LR only
+    "qu-split": ([2, 3], -12.0),  # PEQ for severe howls + GEQ for gentle ones, mixes and LR only
     "dm7": ([2, 3], -18.0),
     "dry": ([2, 3], -12.0),
 }
@@ -40,6 +41,8 @@ def make_desk(a):
     if a.desk == "qu":
         return QuDesk(a.host, a.target, midi_channel=a.midi_channel, apply=a.apply,
                       calibration=load_calibration(a.calibration))
+    if a.desk == "qu-split":
+        return QuSplitDesk(a.host, a.target, midi_channel=a.midi_channel, apply=a.apply)
     if a.desk == "qu-geq":
         return QuGeqDesk(a.host, a.target, midi_channel=a.midi_channel, apply=a.apply)
     if a.desk == "dm7":
@@ -103,6 +106,9 @@ def cmd_live(a):
         desk.check_bands(cfg.bands)
     print("Desk link:", desk.check_link())
     manager = GeqManager(QU_GEQ_FREQS, cfg) if a.desk == "qu-geq" else None
+    if a.desk == "qu-split":
+        gcfg = NotchConfig(max_depth_db=cfg.max_depth_db, release_after_s=cfg.release_after_s)
+        manager = SplitManager(NotchManager(cfg), GeqManager(QU_GEQ_FREQS, gcfg))
     sup = Suppressor(desk, det_cfg(a, a.rate), cfg, manager=manager)
     if a.load:
         with open(a.load, encoding="utf-8") as f:
@@ -145,7 +151,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     def desk_args(p):
-        p.add_argument("--desk", choices=["dry", "qu", "qu-geq", "dm7"], default="dry")
+        p.add_argument("--desk", choices=["dry", "qu", "qu-geq", "qu-split", "dm7"], default="dry")
         p.add_argument("--host", help="desk IP address")
         p.add_argument("--target", default="", help="Qu: Ip1, ST1, Mix1, LR. DM7: InCh:0, Mix:3 (0-based)")
         p.add_argument("--midi-channel", type=int, default=1, help="Qu MIDI channel (Setup > Control > MIDI)")

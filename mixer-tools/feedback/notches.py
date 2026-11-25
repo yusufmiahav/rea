@@ -262,6 +262,90 @@ class GeqManager(NotchManager):
         return "new", n
 
 
+GEQ_OFFSET = 100  # in a SplitManager, GEQ cuts are keyed 100 + fader number
+
+
+class SplitManager:
+    """Drives a channel's PEQ and GEQ together (Qu mixes and LR have both):
+      * a severe howl, or one close to an existing PEQ cut, goes on the PEQ (narrow and precise),
+      * a milder howl goes on the GEQ as a smooth curve,
+      * a frequency is never cut on both, unless the PEQ cut there is already at its limit,
+        when the GEQ adds a gentle supporting dip,
+      * when one side is full or at its cut cap, the other takes over.
+    The GEQ manager keys its cuts by fader number; to the outside (desk, saved file) they are
+    GEQ_OFFSET + fader, so the desk can tell them apart from PEQ bands."""
+
+    def __init__(self, peq: "NotchManager", geq: "GeqManager", severe_db=1.0):
+        self.peq, self.geq, self.severe_db = peq, geq, severe_db
+        self.managers = [peq, geq]
+        self.clock = peq.clock
+
+    @property
+    def cfg(self):
+        return self.peq.cfg
+
+    @staticmethod
+    def _out(n):
+        return None if n is None else Notch(**{**n.__dict__, "band": GEQ_OFFSET + n.band})
+
+    @property
+    def notches(self):
+        out = dict(self.peq.notches)
+        out.update({GEQ_OFFSET + b: self._out(n) for b, n in self.geq.notches.items()})
+        return out
+
+    def _geq(self, freq_hz, severity_db):
+        act, n = self.geq.handle(freq_hz, severity_db)
+        return act, self._out(n)
+
+    def handle(self, freq_hz: float, severity_db: float = 0.0):
+        if self.peq._nearest(freq_hz, self.peq.cfg.merge_oct) is not None:
+            act, n = self.peq.handle(freq_hz, severity_db)
+            if act in ("max", "budget"):
+                return self._geq(freq_hz, 0.0)         # PEQ is doing all it can here: GEQ supports
+            return act, n
+        if self.geq._nearest(freq_hz, self.geq.cfg.merge_oct) is not None:
+            act, n = self._geq(freq_hz, severity_db)
+            if act in ("max", "budget"):
+                return self.peq.handle(freq_hz, severity_db)  # GEQ is at its limit: PEQ takes over
+            return act, n
+        if severity_db >= self.severe_db:
+            act, n = self.peq.handle(freq_hz, severity_db)
+            if act not in ("full", "budget"):
+                return act, n
+            return self._geq(freq_hz, severity_db)
+        act, n = self._geq(freq_hz, severity_db)
+        if act in ("full", "budget"):
+            return self.peq.handle(freq_hz, severity_db)
+        return act, n
+
+    def tick(self, now=None):
+        return list(self.peq.tick(now)) + [(a, self._out(n)) for a, n in self.geq.tick(now)]
+
+    def clear(self, band=None):
+        if band is None:
+            return self.peq.clear() + [self._out(n) for n in self.geq.clear()]
+        if band >= GEQ_OFFSET:
+            return [self._out(n) for n in self.geq.clear(band - GEQ_OFFSET)]
+        return self.peq.clear(band)
+
+    def total_cut(self):
+        return self.peq.total_cut() + self.geq.total_cut()
+
+    def free_bands(self):
+        return self.peq.free_bands()
+
+    def to_json(self) -> str:
+        items = [asdict(n) for n in self.peq.notches.values()] + [asdict(self._out(n)) for n in self.geq.notches.values()]
+        return json.dumps(sorted(items, key=lambda d: d["band"]), indent=2)
+
+    def load_json(self, text: str):
+        items = json.loads(text)
+        self.peq.notches = {d["band"]: Notch(**d) for d in items if d["band"] < GEQ_OFFSET}
+        self.geq.notches = {d["band"] - GEQ_OFFSET: Notch(**{**d, "band": d["band"] - GEQ_OFFSET})
+                            for d in items if d["band"] >= GEQ_OFFSET}
+
+
 def geq_curve(notches, freqs, min_db=-12.0):
     """Spreads each cut over the graphic EQ as a bell: the fader nearest the howl gets the full
     depth, the next ones out get less. Overlapping cuts take the deeper value at each fader.

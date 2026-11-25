@@ -50,17 +50,27 @@ def _highpass_db(freqs, f0, sr):
     return 20 * np.log10(np.abs(h) + 1e-12)
 
 
-def eq_response_db(notches, freqs, geq_freqs=None, sr=96000.0) -> np.ndarray:
-    """Total EQ change in dB at each frequency. With geq_freqs, the cuts are shown as the
-    graphic EQ curve the desk gets (faders joined up); otherwise as parametric bells."""
+def eq_response_db(notches, freqs, geq_freqs=None, sr=96000.0, split=False) -> np.ndarray:
+    """Total EQ change in dB at each frequency. With geq_freqs, GEQ cuts are shown as the
+    graphic EQ curve the desk gets (faders joined up). In split mode only bands >= GEQ_OFFSET
+    are GEQ cuts and the rest are parametric bells; the two responses add up."""
+    from .notches import GEQ_OFFSET
     freqs = np.asarray(freqs, dtype=float)
     notches = list(notches)
-    if geq_freqs is not None:
-        faders = geq_curve(notches, geq_freqs)
-        g = np.array([faders.get(i + 1, 0.0) for i in range(len(geq_freqs))])
-        return np.interp(np.log2(freqs), np.log2(geq_freqs), g, left=0.0, right=0.0)
+    if geq_freqs is None:
+        geq, peq = [], notches
+    elif split:
+        geq = [n for n in notches if n.band >= GEQ_OFFSET]
+        peq = [n for n in notches if n.band < GEQ_OFFSET]
+    else:
+        geq = [n for n in notches if n.band != 0]
+        peq = [n for n in notches if n.band == 0]
     out = np.zeros(len(freqs))
-    for n in notches:
+    if geq:
+        faders = geq_curve(geq, geq_freqs)
+        g = np.array([faders.get(i + 1, 0.0) for i in range(len(geq_freqs))])
+        out += np.interp(np.log2(freqs), np.log2(geq_freqs), g, left=0.0, right=0.0)
+    for n in peq:
         if n.band == 0:  # HPF, 12 dB/octave
             out += _highpass_db(freqs, n.freq_hz, sr)
             continue

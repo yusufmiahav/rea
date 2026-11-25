@@ -108,7 +108,12 @@ Targets and bands (band numbers are 1-4, the same as on the desk):
   such as `0x64`). Bands are 1 = LF, 2 = LM, 3 = HM, 4 = HF, and the default is 2,3. If you use LF
   or HF, the tool switches that band to bell first.
 - **Qu GEQ** (`--desk qu-geq`): only on mixes and LR (`Mix1`–`Mix4`, `LR`). Each howl pulls down
-  the nearest of the 28 graphic faders (31.5 Hz–16 kHz), using at most 6 faders.
+  the nearest of the 28 graphic faders (31.5 Hz–16 kHz) as a smooth curve over its neighbours.
+- **Qu PEQ + GEQ together** (`--desk qu-split`, or "Qu-16 PEQ + GEQ together" in the app): mixes
+  and LR only. Severe howls (rising fast) get a narrow PEQ cut; gentler ones get a smooth GEQ
+  curve. A howl near an existing cut stays on the EQ that already has it, so one frequency is never
+  cut twice, except that when a PEQ cut is at its deepest the GEQ adds a supporting dip (and the
+  other way round). When one side is full, the other takes over. The analyser shows both added up.
 - **DM7** (`--desk dm7`): targets `InCh:0`, `Mix:3`, `Mtrx:1` (0-based). Bands are 1-4, and the
   default is 2,3.
 

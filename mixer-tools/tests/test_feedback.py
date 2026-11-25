@@ -365,6 +365,72 @@ class QuRoutingTests(unittest.TestCase):
         self.assertIn("B0 63 40 B0 62 55 B0 06 01 B0 26 04", out[0])
 
 
+class SplitTests(unittest.TestCase):
+    def _split(self):
+        from feedback.desks import QU_GEQ_FREQS
+        from feedback.notches import GeqManager, SplitManager
+        t = [0.0]
+        clk = lambda: t[0]
+        peq = NotchManager(NotchConfig(bands=[2, 3], release_after_s=0), clock=clk)
+        geq = GeqManager(QU_GEQ_FREQS, NotchConfig(release_after_s=0), clock=clk)
+        return SplitManager(peq, geq), t
+
+    def test_severe_goes_to_peq_mild_to_geq(self):
+        from feedback.notches import GEQ_OFFSET
+        m, t = self._split()
+        act, n = m.handle(2500.0, severity_db=2.0)
+        self.assertEqual(act, "new")
+        self.assertIn(n.band, (2, 3))
+        act, n = m.handle(400.0, severity_db=0.3)
+        self.assertEqual(act, "new")
+        self.assertGreaterEqual(n.band, GEQ_OFFSET)
+        self.assertEqual(len(m.notches), 2)
+
+    def test_no_double_cut(self):
+        from feedback.notches import GEQ_OFFSET
+        m, t = self._split()
+        m.handle(2500.0, severity_db=2.0)          # PEQ
+        t[0] += 2
+        m.handle(2550.0, severity_db=0.2)          # mild, but next to the PEQ cut: stays on the PEQ
+        self.assertFalse([b for b in m.notches if b >= GEQ_OFFSET])
+        m.handle(400.0, severity_db=0.2)           # GEQ
+        t[0] += 2
+        m.handle(405.0, severity_db=3.0)           # severe, but next to the GEQ cut: stays on the GEQ
+        self.assertEqual(len([b for b in m.notches if b < GEQ_OFFSET]), 1)
+
+    def test_geq_supports_a_peq_cut_at_max(self):
+        from feedback.notches import GEQ_OFFSET
+        m, t = self._split()
+        for _ in range(12):
+            m.handle(2500.0, severity_db=3.0)
+            t[0] += 2
+        self.assertTrue([b for b in m.notches if b >= GEQ_OFFSET], m.notches)
+        js = m.to_json()
+        m2, _ = self._split()
+        m2.load_json(js)
+        self.assertEqual(sorted(m2.notches), sorted(m.notches))
+
+    def test_split_desk_bytes(self):
+        from feedback.desks import QuSplitDesk
+        out = []
+        d = QuSplitDesk(None, "Mix1", log=out.append)
+        d.set_notch(Notch(band=120, freq_hz=2500.0, gain_db=-6.0, width_oct=1 / 3))
+        self.assertIn("B0 62 70", out[0])                 # GEQ
+        d.set_notch(Notch(band=2, freq_hz=1000.0, gain_db=-6.0, width_oct=1 / 3))
+        self.assertNotIn("B0 62 70", out[1])              # PEQ, not GEQ
+        d.clear_notch(120)
+        self.assertEqual(d._faders, {})
+
+    def test_split_response_adds_up(self):
+        from feedback import rta
+        from feedback.desks import QU_GEQ_FREQS
+        ns = [Notch(band=2, freq_hz=1000.0, gain_db=-9.0, width_oct=1 / 6),
+              Notch(band=116, freq_hz=250.0, gain_db=-6.0, width_oct=1 / 3)]
+        r = rta.eq_response_db(ns, [1000.0, 250.0], geq_freqs=QU_GEQ_FREQS, split=True)
+        self.assertAlmostEqual(r[0], -9.0, delta=0.3)
+        self.assertAlmostEqual(r[1], -6.0, delta=0.3)
+
+
 class RtaTests(unittest.TestCase):
     def test_band_levels_find_a_tone(self):
         from feedback import rta
