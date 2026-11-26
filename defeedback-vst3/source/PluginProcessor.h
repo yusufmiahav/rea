@@ -10,7 +10,7 @@ public:
     ~DeFeedbackProcessor() override { stopTimer(); setLearning(false); }
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-    void releaseResources() override {}
+    void releaseResources() override { engine.stopWorker(); }
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
 

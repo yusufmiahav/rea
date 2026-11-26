@@ -1,6 +1,8 @@
 // Core self-tests: run by CI before the plugin is packaged.
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
+#include <thread>
 
 #include "../tools/sim.h"
 
@@ -108,6 +110,24 @@ int main() {
             sum += howlAt(on.out) - howlAt(off.out); ++n;
         }
         CHECK(sum / n > 3.0, "closed loop: %.1f dB more gain before feedback on average", sum / n);
+    }
+    { // threaded mode: audio callback stays cheap and rings are still caught
+        dfb::Engine e; e.setThreaded(true); e.prepare(FS, 2, 32); e.setSensitivity(0.5f);
+        std::vector<float> l((size_t)FS * 3), r;
+        for (size_t i = 0; i < l.size(); ++i) l[i] = (float)(0.2 * std::sin(2 * M_PI * 3000 * i / FS));
+        r = l;
+        double worst = 0, sum = 0; int n = 0;
+        for (size_t i = 0; i + 32 <= l.size(); i += 32) {
+            float* ch[2] = {l.data() + i, r.data() + i};
+            auto t0 = std::chrono::steady_clock::now();
+            e.process(ch, 2, 32);
+            const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
+            worst = std::max(worst, us); sum += us; ++n;
+            if (i % 4096 == 0) std::this_thread::sleep_for(std::chrono::microseconds(600)); // let the analysis thread run, like real time would
+        }
+        e.stopWorker();
+        CHECK(e.eventCount.load() > 0, "threaded: steady 3 kHz ring caught (%d cuts)", e.eventCount.load());
+        std::printf("      audio callback per 32 samples: mean %.1f us, worst %.1f us (budget 667 us)\n", sum / n, worst);
     }
     std::printf(failures ? "\n%d FAILED\n" : "\nall passed\n", failures);
     return failures ? 1 : 0;

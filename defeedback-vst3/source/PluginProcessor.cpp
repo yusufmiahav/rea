@@ -40,6 +40,7 @@ DeFeedbackProcessor::DeFeedbackProcessor()
     pLock = apvts.getRawParameterValue("lock");
     pFreeze = apvts.getRawParameterValue("freeze");
     pBypass = apvts.getRawParameterValue("bypass");
+    engine.setThreaded(true); // FFT analysis off the audio thread (no crackles at small ASIO buffers)
 }
 
 bool DeFeedbackProcessor::isBusesLayoutSupported(const BusesLayout& layouts) const {

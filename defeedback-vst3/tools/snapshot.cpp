@@ -13,6 +13,7 @@ int main(int argc, char** argv) {
     const double fs = 48000;
     DeFeedbackProcessor proc;
     proc.setPlayConfigDetails(2, 2, fs, 256);
+    proc.engine.setThreaded(false); // deterministic offline render
     proc.prepareToPlay(fs, 256);
     sim::Rng r(7);
     auto src = sim::makeSource(sim::Src::Sung, fs, 10, r);

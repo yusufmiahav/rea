@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <chrono>
+#include <thread>
 #include <vector>
 
 #include "detector.h"
@@ -41,7 +43,7 @@ public:
         lr.store((r + n) % kLearnCap, std::memory_order_release);
         return n;
     }
-    double nowSeconds() const { return detector.nowSeconds(); }
+    double nowSeconds() const { return nowS.load(std::memory_order_relaxed); }
 
     struct SlotView { std::atomic<float> freq{0}, db{0}, oct{0}; std::atomic<int> state{0}; }; // 0 off,1 live,2 fixed
     SlotView slotView[kMaxNotches];
@@ -49,6 +51,7 @@ public:
     std::atomic<float> lastEventFreq{0};
 
     void prepare(double sampleRate, int channels, int maxBlock) {
+        stopWorker();
         fs = sampleRate;
         chans = std::min(channels, kMaxChannels);
         numChannels = chans;
@@ -61,15 +64,36 @@ public:
         events.reserve(64);
         for (auto& d : display) d = -120.f;
         meterDecay = std::exp(-1.0 / (0.3 * fs)); // 300 ms peak fall
+        mono.assign(std::max(maxBlock, 8192), 0.f);
+        ring.assign(kRing, 0.f); ringW = 0; ringR = 0;
+        evW = 0; evR = 0;
+        work.assign(kRing, 0.f);
+        if (threaded) startWorker();
+    }
+
+    void stopWorker() {
+        running = false;
+        if (worker.joinable()) worker.join();
     }
 
     double sampleRate() const { return fs; }
     static double displayFreq(int i) { return 20.0 * std::pow(1000.0, (i + 0.5) / kDisplayBins); } // 20 Hz..20 kHz
 
+    // Threaded mode (the plugin): the FFT analysis runs on a background thread
+    // so the audio callback only does the notch filters plus a copy. Offline
+    // tools leave it off and get the same, fully deterministic behaviour.
+    void setThreaded(bool t) { threaded = t; }
+    ~Engine() { stopWorker(); }
+
     void process(float* const* data, int channels, int num) {
         channels = std::min(channels, chans);
         if ((int)mono.size() < num) mono.resize(num); // only if the host lied about block size
         measure(data, channels, num, inMeter);
+
+        // cuts found by the analysis thread
+        HowlEvent ev;
+        while (popEvent(ev)) applyEvent(ev);
+
         if (!bypass) bank.process(data, channels, num);
         measure(data, channels, num, outMeter);
 
@@ -77,25 +101,82 @@ public:
             float s = 0; for (int c = 0; c < channels; ++c) s += data[c][i];
             mono[i] = channels ? s / channels : 0.f;
         }
-        events.clear();
-        detector.process(mono.data(), num, events);
-        if (!bypass && !frozen)
-            for (const auto& e : events) {
-                bank.trigger(e.freq, e.severity);
-                pushCut(e);
-                eventCount.fetch_add(1);
-                lastEventFreq = (float)e.freq;
-            }
-        if (detector.newFrame) publishSpectrum();
+        bypassFlag.store(bypass, std::memory_order_relaxed);
+        frozenFlag.store(frozen, std::memory_order_relaxed);
+        if (threaded && worker.joinable()) {
+            pushSamples(mono.data(), num);
+        } else {
+            analyse(mono.data(), num);
+            while (popEvent(ev)) applyEvent(ev);
+        }
         publishSlots();
     }
 
     // detector + bank settings in one place
-    void setSensitivity(float s) { detector.settings.sensitivity = s; }
-    void setRingOut(bool r) { detector.settings.ringOut = r; bank.settings.lockAll = r || lockAll; ringOut = r; }
+    void setSensitivity(float s) { sensAtomic.store(s, std::memory_order_relaxed); if (!worker.joinable()) detector.settings.sensitivity = s; }
+    void setRingOut(bool r) { ringOutAtomic.store(r); if (!worker.joinable()) detector.settings.ringOut = r; bank.settings.lockAll = r || lockAll; ringOut = r; }
     void setLockAll(bool l) { lockAll = l; bank.settings.lockAll = l || ringOut; if (l) for (auto& s : bank.slots) if (s.active) s.locked = true; }
 
 private:
+    static constexpr int kRing = 1 << 17, kEv = 256;
+
+    void startWorker() {
+        running = true;
+        worker = std::thread([this] {
+            while (running.load(std::memory_order_relaxed)) {
+                const size_t w = ringW.load(std::memory_order_acquire), r = ringR.load(std::memory_order_relaxed);
+                size_t n = w - r;
+                if (n == 0) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
+                if (n > (size_t)kRing) { ringR.store(w - kRing); continue; } // fell far behind: skip ahead
+                n = std::min<size_t>(n, 4096);
+                for (size_t i = 0; i < n; ++i) work[i] = ring[(r + i) & (kRing - 1)];
+                ringR.store(r + n, std::memory_order_release);
+                detector.settings.sensitivity = sensAtomic.load(std::memory_order_relaxed);
+                detector.settings.ringOut = ringOutAtomic.load(std::memory_order_relaxed);
+                analyse(work.data(), (int)n);
+            }
+        });
+    }
+
+    void pushSamples(const float* x, int n) {
+        const size_t w = ringW.load(std::memory_order_relaxed), r = ringR.load(std::memory_order_acquire);
+        if (w + n - r > (size_t)kRing) return; // analysis thread stalled: drop, never block audio
+        for (int i = 0; i < n; ++i) ring[(w + i) & (kRing - 1)] = x[i];
+        ringW.store(w + n, std::memory_order_release);
+    }
+
+    // Runs on the analysis thread (or inline when not threaded).
+    void analyse(const float* x, int n) {
+        events.clear();
+        detector.process(x, n, events);
+        nowS.store(detector.nowSeconds(), std::memory_order_relaxed);
+        const bool act = !bypassFlag.load(std::memory_order_relaxed) && !frozenFlag.load(std::memory_order_relaxed);
+        for (const auto& e : events) {
+            if (!act) continue;
+            pushCut(e);
+            const int w = evW.load(std::memory_order_relaxed), nw = (w + 1) % kEv;
+            if (nw == evR.load(std::memory_order_acquire)) break;
+            evBuf[w] = e;
+            evW.store(nw, std::memory_order_release);
+        }
+        if (detector.newFrame) publishSpectrum();
+    }
+
+    bool popEvent(HowlEvent& e) {
+        const int r = evR.load(std::memory_order_relaxed);
+        if (r == evW.load(std::memory_order_acquire)) return false;
+        e = evBuf[r];
+        evR.store((r + 1) % kEv, std::memory_order_release);
+        return true;
+    }
+
+    void applyEvent(const HowlEvent& e) {
+        if (bypass || frozen) return;
+        bank.trigger(e.freq, e.severity);
+        eventCount.fetch_add(1);
+        lastEventFreq = (float)e.freq;
+    }
+
     void measure(float* const* d, int ch, int num, Meter* m) {
         for (int c = 0; c < ch; ++c) {
             float pk = m[c].peak.load(std::memory_order_relaxed) * (float)std::pow(meterDecay, num);
@@ -164,8 +245,16 @@ private:
     double fs = 48000, meterDecay = 0.9999;
     int chans = 2;
     bool lockAll = false, ringOut = false;
-    std::vector<float> mono;
+    std::vector<float> mono, ring, work;
     std::vector<HowlEvent> events;
+    HowlEvent evBuf[kEv]{};
+    std::atomic<size_t> ringW{0}, ringR{0};
+    std::atomic<int> evW{0}, evR{0};
+    std::atomic<bool> running{false}, bypassFlag{false}, frozenFlag{false}, ringOutAtomic{false};
+    std::atomic<float> sensAtomic{0.5f};
+    std::atomic<double> nowS{0.0};
+    std::thread worker;
+    bool threaded = false;
 };
 
 } // namespace dfb

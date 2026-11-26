@@ -65,6 +65,7 @@ public:
         binHz = fs / n;
         writePos = 0; sinceHop = 0; frameIdx = 0;
         tracks.clear();
+        tracks.reserve(kMaxTracks + 1);
         frameDt = hop / fs;
     }
 
