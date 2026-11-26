@@ -57,7 +57,7 @@ public:
     Canvas(Graph& g, Host& h) : graph(g), host(h) {
         graph.addChangeListener(this);
         setSize(3200, 2000);
-        startTimerHz(10);
+        startTimerHz(2); // only to follow device channel-count changes; keeps the GUI light
     }
     ~Canvas() override { graph.removeChangeListener(this); }
 
@@ -282,6 +282,43 @@ private:
     juce::Point<float> dragEnd, grabOffset;
 };
 
+// ------------------------------------------------------------------ timed audio callback
+// Wraps the graph player and measures what matters for breakup: callbacks that
+// arrive late (audio lost in the driver/USB) and how much of each buffer the
+// plugins use (over 100% = the plugins themselves can't keep up).
+class TimedPlayer : public juce::AudioIODeviceCallback {
+public:
+    explicit TimedPlayer(juce::AudioProcessorPlayer& p) : player(p) {}
+    void audioDeviceIOCallbackWithContext(const float* const* in, int nin, float* const* out, int nout, int n,
+                                          const juce::AudioIODeviceCallbackContext& ctx) override {
+        const auto t0 = juce::Time::getHighResolutionTicks();
+        const double tick = 1.0 / (double)juce::Time::getHighResolutionTicksPerSecond();
+        const double blockS = n / juce::jmax(1.0, sampleRate);
+        if (last != 0 && ++warm > 100) {
+            const double gap = (t0 - last) * tick;
+            if (gap > juce::jmax(2.0 * blockS, blockS + 0.004)) late.fetch_add(1, std::memory_order_relaxed);
+        }
+        last = t0;
+        player.audioDeviceIOCallbackWithContext(in, nin, out, nout, n, ctx);
+        const float load = (float)((juce::Time::getHighResolutionTicks() - t0) * tick / blockS);
+        if (load > peakLoad.load(std::memory_order_relaxed)) peakLoad.store(load, std::memory_order_relaxed);
+        if (load > 0.9f) overloads.fetch_add(1, std::memory_order_relaxed);
+    }
+    void audioDeviceAboutToStart(juce::AudioIODevice* d) override {
+        sampleRate = d->getCurrentSampleRate(); last = 0; warm = 0;
+        player.audioDeviceAboutToStart(d);
+    }
+    void audioDeviceStopped() override { player.audioDeviceStopped(); }
+    void audioDeviceError(const juce::String& e) override { player.audioDeviceError(e); }
+    std::atomic<int> late{0}, overloads{0};
+    std::atomic<float> peakLoad{0.f};
+private:
+    juce::AudioProcessorPlayer& player;
+    double sampleRate = 48000;
+    juce::int64 last = 0;
+    int warm = 0;
+};
+
 // ------------------------------------------------------------------ main component
 class Main : public juce::Component, public Canvas::Host, private juce::ChangeListener, private juce::Timer {
 public:
@@ -301,7 +338,7 @@ public:
         deviceManager.initialise(256, 256, devState.get(), true);
         deviceManager.addChangeListener(this);
         player.setProcessor(&graph);
-        deviceManager.addAudioCallback(&player);
+        deviceManager.addAudioCallback(&timed);
 
         canvas = std::make_unique<Canvas>(graph, *this);
         viewport.setViewedComponent(canvas.get(), false);
@@ -345,7 +382,7 @@ public:
         if (auto xml = deviceManager.createStateXml()) props.getUserSettings()->setValue("audioDevice", xml.get());
         props.saveIfNeeded();
         windows.clear();
-        deviceManager.removeAudioCallback(&player);
+        deviceManager.removeAudioCallback(&timed);
         player.setProcessor(nullptr);
         graph.clear();
     }
@@ -675,11 +712,15 @@ private:
         }
         if (juce::Time::getMillisecondCounterHiRes() < scanResultUntil) { status.setText(scanResult, juce::dontSendNotification); return; }
         juce::String s;
-        if (auto* d = deviceManager.getCurrentAudioDevice())
+        if (auto* d = deviceManager.getCurrentAudioDevice()) {
             s << d->getTypeName() << ": " << d->getName() << "  |  " << juce::String(d->getCurrentSampleRate() / 1000.0, 1) << " kHz, "
               << d->getCurrentBufferSizeSamples() << " samples  |  CPU " << juce::String(deviceManager.getCpuUsage() * 100.0, 0)
-              << "%  |  dropouts " << d->getXRunCount();
-        else s = "No audio device: click Audio settings";
+              << "%  |  peak load " << juce::roundToInt(timed.peakLoad.exchange(0.f) * 100.f) << "%  |  late buffers " << timed.late.load()
+              << "  |  overloads " << timed.overloads.load();
+        statusAlert = timed.late.load() + timed.overloads.load();
+        status.setColour(juce::Label::textColourId, statusAlert != lastAlert ? col::off : col::dim);
+        lastAlert = statusAlert;
+        } else s = "No audio device: click Audio settings";
         status.setText(s, juce::dontSendNotification);
     }
 
@@ -689,6 +730,8 @@ private:
     juce::KnownPluginList knownPlugins;
     Graph graph;
     juce::AudioProcessorPlayer player;
+    TimedPlayer timed{player};
+    int statusAlert = 0, lastAlert = 0;
     juce::Viewport viewport;
     std::unique_ptr<Canvas> canvas;
     juce::TextButton audioBtn{"Audio settings"}, scanBtn{"Plugins..."}, addBtn{"Add node"}, saveBtn{"Save..."}, loadBtn{"Open..."};
