@@ -297,6 +297,13 @@ DeFeedbackEditor::DeFeedbackEditor(DeFeedbackProcessor& p)
     learnStatus.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(learnStatus);
 
+    health.setFont(juce::FontOptions(11.f, juce::Font::bold));
+    health.setJustificationType(juce::Justification::centredLeft);
+    health.setTooltip("Audio health. 'Dropouts' counts audio buffers that arrived late from the audio driver/USB (lost audio = clicks or buzz). "
+                      "If it climbs when you hear buzz, raise the ASIO buffer or check the USB cable/port and power settings. "
+                      "'proc' is the plugin's own worst processing time per buffer.");
+    addAndMakeVisible(health);
+
     sourceLabel.setText(p.sourceName, juce::dontSendNotification);
     sourceLabel.setEditable(true);
     sourceLabel.setTooltip("Name the desk channel this is on (click to edit), e.g. Qu-16 Ch 3 Vocal.");
@@ -318,7 +325,7 @@ DeFeedbackEditor::DeFeedbackEditor(DeFeedbackProcessor& p)
     setResizable(true, true);
     setResizeLimits(760, 480, 1800, 1100);
     setSize(960, 600);
-    startTimerHz(30);
+    startTimerHz(24);
 }
 
 DeFeedbackEditor::~DeFeedbackEditor() { setLookAndFeel(nullptr); }
@@ -396,7 +403,11 @@ void DeFeedbackEditor::resized() {
     }
 
     auto mid = r.reduced(10, 4);
-    modelInfo.setBounds(mid.removeFromBottom(14));
+    {
+        auto infoRow = mid.removeFromBottom(14);
+        health.setBounds(infoRow.removeFromLeft(infoRow.getWidth() / 2));
+        modelInfo.setBounds(infoRow);
+    }
     notches.setBounds(mid.removeFromBottom(40));
     mid.removeFromBottom(6);
     inMeter.setBounds(mid.removeFromLeft(70));
@@ -410,6 +421,17 @@ void DeFeedbackEditor::timerCallback() {
     outMeter.tick(ch);
     spectrum.tick();
     notches.repaint();
+    {
+        const int late = proc.lateCallbacks.load();
+        const double since = juce::Time::getMillisecondCounterHiRes() * 0.001 - proc.lastLateTime.load();
+        const bool recent = late > 0 && since < 3.0;
+        juce::String h = "Audio: " + juce::String(proc.bufferMs.load(), 1) + " ms buffer, proc max " + juce::String(proc.maxProcMs.load(), 2)
+                       + " ms  |  Dropouts: " + juce::String(late);
+        if (proc.badSamples.load() > 0) h << "  |  bad samples fixed: " << proc.badSamples.load();
+        health.setText(h, juce::dontSendNotification);
+        health.setColour(juce::Label::textColourId, recent ? col::cut : (late > 0 ? col::fixed : col::dim));
+        lastLate = late;
+    }
     const bool learning = proc.isLearning();
     wasFb.setEnabled(learning);
     notFb.setEnabled(learning);

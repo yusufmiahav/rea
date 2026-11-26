@@ -114,6 +114,8 @@ public:
             if (s.active && !(keepLocked && s.locked)) { s.locked = false; s.holdLeft = 0; s.targetDb = 0; }
     }
 
+    void resetFilterState() { for (int i = 0; i < kMaxNotches; ++i) resetState(i); }
+
     // Restore a fixed cut (from saved state).
     void addFixed(double freq, double db, double oct) {
         for (int i = 0; i < kMaxNotches; ++i) if (!slots[i].active) {

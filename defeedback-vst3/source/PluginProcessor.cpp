@@ -58,10 +58,24 @@ void DeFeedbackProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) 
     const juce::SpinLock::ScopedLockType sl(pendingLock);
     if (!hasPending && !keep.empty()) { pendingFixed = keep; hasPending = true; }
     lastLockAll = lastRingOut = false;
+    lastCallTicks = 0; warmup = 0;
 }
 
 void DeFeedbackProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
     juce::ScopedNoDenormals noDenormals;
+    const auto t0 = juce::Time::getHighResolutionTicks();
+    const double tickS = 1.0 / (double)juce::Time::getHighResolutionTicksPerSecond();
+    const double blockS = buffer.getNumSamples() / juce::jmax(1.0, getSampleRate());
+    bufferMs.store((float)(blockS * 1000.0), std::memory_order_relaxed);
+    if (lastCallTicks != 0 && ++warmup > 50) {
+        // callbacks can jitter, but a gap of 2+ buffers (and > 4 ms) means audio was lost upstream
+        const double gap = (t0 - lastCallTicks) * tickS;
+        if (gap > juce::jmax(2.0 * blockS, blockS + 0.004)) {
+            lateCallbacks.fetch_add(1, std::memory_order_relaxed);
+            lastLateTime.store(juce::Time::getMillisecondCounterHiRes() * 0.001, std::memory_order_relaxed);
+        }
+    }
+    lastCallTicks = t0;
     for (int c = getTotalNumInputChannels(); c < getTotalNumOutputChannels(); ++c) buffer.clear(c, 0, buffer.getNumSamples());
 
     if (clearRequest.exchange(false)) engine.bank.clear(false);
@@ -87,6 +101,18 @@ void DeFeedbackProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     engine.bypass = pBypass->load() > 0.5f;
 
     engine.process(buffer.getArrayOfWritePointers(), juce::jmin(buffer.getNumChannels(), dfb::kMaxChannels), buffer.getNumSamples());
+
+    // Safety: never pass NaN/inf on to the PA. If it ever happens, reset the filters.
+    bool bad = false;
+    for (int c = 0; c < buffer.getNumChannels(); ++c) {
+        auto* d = buffer.getWritePointer(c);
+        for (int i = 0; i < buffer.getNumSamples(); ++i)
+            if (!std::isfinite(d[i])) { d[i] = 0.f; bad = true; }
+    }
+    if (bad) { badSamples.fetch_add(1); engine.bank.resetFilterState(); }
+
+    const double proc = (juce::Time::getHighResolutionTicks() - t0) * tickS * 1000.0;
+    if (proc > maxProcMs.load(std::memory_order_relaxed)) maxProcMs.store((float)proc, std::memory_order_relaxed);
 }
 
 bool DeFeedbackProcessor::setLearning(bool on) {

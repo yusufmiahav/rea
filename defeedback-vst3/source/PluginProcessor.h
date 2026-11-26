@@ -39,6 +39,12 @@ public:
     std::atomic<bool> clearRequest{false}, clearLiveRequest{false};
     juce::String sourceName{"Qu-16 Ch 1"};
 
+    // Audio health: tells driver/USB dropouts apart from plugin problems.
+    std::atomic<int> lateCallbacks{0};   // a callback arrived much later than the buffer length (driver/USB dropout)
+    std::atomic<int> badSamples{0};      // NaN/inf found and removed (should stay 0)
+    std::atomic<float> maxProcMs{0.f}, bufferMs{0.f};
+    std::atomic<double> lastLateTime{0.0};
+
     // Learn mode (message thread only)
     bool setLearning(bool on);          // opens/closes a log in Documents/De-Feedback AI
     bool isLearning() const { return learnLog.isOpen(); }
@@ -57,6 +63,8 @@ private:
     struct Fixed { double f, db, oct; };
     juce::SpinLock pendingLock;
     std::vector<Fixed> pendingFixed;
+    juce::int64 lastCallTicks = 0;
+    int warmup = 0;
     bool hasPending = false, resetBeforeRestore = false, lastLockAll = false, lastRingOut = false;
 
     std::atomic<float>* pSens = nullptr; std::atomic<float>* pMode = nullptr;
