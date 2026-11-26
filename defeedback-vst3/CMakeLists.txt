@@ -47,6 +47,14 @@ if(DFB_BUILD_PLUGIN)
   target_compile_definitions(DeFeedbackAI PUBLIC
     JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0 _USE_MATH_DEFINES)
+  # ASIO (Windows standalone): pass -DDFB_ASIO_SDK=<path to ASIOSDK>. The SDK is
+  # downloaded by CI from Steinberg and not stored in this repo.
+  if(WIN32 AND DEFINED DFB_ASIO_SDK)
+    target_compile_definitions(DeFeedbackAI PUBLIC JUCE_ASIO=1)
+    target_include_directories(DeFeedbackAI PUBLIC "${DFB_ASIO_SDK}/common")
+    message(STATUS "ASIO enabled from ${DFB_ASIO_SDK}")
+  endif()
+
   target_link_libraries(DeFeedbackAI PRIVATE
     juce::juce_audio_utils juce::juce_dsp
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)

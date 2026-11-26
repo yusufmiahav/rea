@@ -26,7 +26,7 @@ The IN and OUT meters show the channel coming from the desk (peak, RMS and peak 
 
 ## Using it with the Qu-16 or DM7
 - **In a DAW or plugin host** (Reaper, Gig Performer, Cantabile and so on): pick the desk's USB audio device. Put the vocal channel's USB/direct-out send on a track, insert De-Feedback AI, and route the track back to the desk on a USB return channel.
-- **Without a DAW:** run `De-Feedback AI (Standalone).exe`. Open *Options > Audio/MIDI Settings*, choose the desk's USB audio device, and pick the input and output channels.
+- **Without a DAW:** run `De-Feedback AI (Standalone).exe`. Open *Options > Audio/MIDI Settings*, set the audio device type to **ASIO**, choose the Qu (or DM7) ASIO driver, and tick the input and output channels you want. ASIO shows all of the desk's USB channels; Windows Audio/DirectSound usually only shows the main pair.
 
 ## Install
 Copy the `De-Feedback AI.vst3` folder to `C:\Program Files\Common Files\VST3\`, then rescan plugins in your host. The build is unsigned, so Windows SmartScreen may warn on the standalone exe. Choose "More info", then "Run anyway".
@@ -41,7 +41,7 @@ cmake --build build --config Release
 build/dfb_tests
 ```
 Windows builds come from `.github/workflows/defeedback-vst3-windows.yml`.
-JUCE is used under its AGPLv3 or free Starter licence.
+JUCE is used under its AGPLv3 or free Starter licence. The Windows build compiles in ASIO support from the Steinberg ASIO SDK (GPLv3 option), which CI downloads from Steinberg at build time.
 
 ## Retraining the classifier
 ```

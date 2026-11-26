@@ -17,8 +17,15 @@ jobs:
         working-directory: defeedback-vst3
     steps:
       - uses: actions/checkout@v4
+      - name: Fetch Steinberg ASIO SDK (used under its GPLv3 option, not redistributed)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://download.steinberg.net/sdk_downloads/ASIO-SDK_2.3.4_2025-10-15.zip" -OutFile "$env:RUNNER_TEMP\asio.zip"
+          Expand-Archive "$env:RUNNER_TEMP\asio.zip" -DestinationPath "$env:RUNNER_TEMP\asio" -Force
+          if (-not (Test-Path "$env:RUNNER_TEMP\asio\ASIOSDK\common\iasiodrv.h")) { throw "ASIO SDK layout changed" }
       - name: Configure (JUCE 8.0.9 fetched by CMake)
-        run: cmake -B build -A x64
+        shell: pwsh
+        run: cmake -B build -A x64 "-DDFB_ASIO_SDK=$($env:RUNNER_TEMP -replace '\\','/')/asio/ASIOSDK"
       - name: Build plugin, standalone, tests and tools
         run: cmake --build build --config Release --parallel --target DeFeedbackAI_VST3 DeFeedbackAI_Standalone dfb_tests dfb_sim dfb_snapshot
       - name: Core self-tests
