@@ -31,7 +31,11 @@ The IN and OUT meters show the channel coming from the desk (peak, RMS and peak 
 ## REA Plugin Hub (plugin host)
 `REA Plugin Hub.exe` is a small VST3 host built around De-Feedback AI.
 - **Audio settings:** choose **ASIO** and the Qu-16/DM7 driver. Every enabled USB channel becomes a pin on the DESK IN / DESK OUT nodes, named after the driver's channel names.
-- **Scan plugins:** go to *Options > Scan for new or updated VST3 plug-ins*. The list is remembered.
+- **Plugins...:**
+  - **Scan for new or changed plugins (fast)** scans in the background on several threads. It skips plugins whose files haven't changed, and reads `moduleinfo.json` instead of loading the plugin where one exists. Progress shows in the status bar, with a Cancel button.
+  - **Rescan everything** forces a full scan.
+  - **Add a plugin folder...** includes extra folders in the scan.
+  - **Manage plugin list...** opens the full list. Plugins that crashed during a scan are put on a block list there.
 - **Right-click the canvas** to add De-Feedback AI (built in) or any scanned VST3, such as another de-feedback plugin, as a node.
 - **Wiring:** drag from an output pin (right side) to an input pin (left side) to connect. Right-click a wire to delete it, or a pin to disconnect it.
 - **Node windows:** double-click a node to open its window. Right-click for Bypass, Disconnect all or Delete.

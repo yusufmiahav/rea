@@ -310,7 +310,22 @@ public:
 
         for (auto* b : {&audioBtn, &scanBtn, &addBtn, &saveBtn, &loadBtn}) addAndMakeVisible(*b);
         audioBtn.onClick = [this] { showAudioSettings(); };
-        scanBtn.onClick = [this] { showPluginList(); };
+        scanBtn.onClick = [this] {
+            juce::PopupMenu m;
+            m.addItem(1, "Scan for new or changed plugins (fast)");
+            m.addItem(2, "Rescan everything");
+            m.addItem(3, "Add a plugin folder...");
+            m.addSeparator();
+            m.addItem(4, "Manage plugin list...");
+            m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&scanBtn), [this](int r) {
+                if (r == 1) startScan(false);
+                if (r == 2) startScan(true);
+                if (r == 3) addFolder();
+                if (r == 4) showPluginList();
+            });
+        };
+        cancelBtn.onClick = [this] { scanStop = true; };
+        addChildComponent(cancelBtn);
         addBtn.onClick = [this] { showAddMenu({200, 200}); };
         saveBtn.onClick = [this] { saveAs(); };
         loadBtn.onClick = [this] { openFile(); };
@@ -324,6 +339,8 @@ public:
     }
 
     ~Main() override {
+        scanStop = true;
+        scanPool.reset();
         saveSession(sessionFile());
         if (auto xml = deviceManager.createStateXml()) props.getUserSettings()->setValue("audioDevice", xml.get());
         props.saveIfNeeded();
@@ -347,6 +364,7 @@ public:
         auto top = r.removeFromTop(44).reduced(8, 7);
         top.removeFromLeft(200);
         for (auto* b : {&audioBtn, &scanBtn, &addBtn, &saveBtn, &loadBtn}) { b->setBounds(top.removeFromLeft(b == &scanBtn ? 130 : 110)); top.removeFromLeft(6); }
+        if (cancelBtn.isVisible()) { cancelBtn.setBounds(top.removeFromRight(80)); top.removeFromRight(6); }
         status.setBounds(top);
         viewport.setBounds(r);
     }
@@ -529,6 +547,88 @@ private:
         });
     }
 
+    // ---- fast plugin scan: background, parallel, skips plugins whose files haven't
+    // changed, and JUCE reads moduleinfo.json where a plugin ships one (no loading).
+    juce::AudioPluginFormat* vst3Format() {
+        for (int i = 0; i < formats.getNumFormats(); ++i)
+            if (formats.getFormat(i)->getName() == "VST3") return formats.getFormat(i);
+        return nullptr;
+    }
+
+    juce::FileSearchPath scanPath() {
+        auto* f = vst3Format();
+        juce::FileSearchPath p = f ? f->getDefaultLocationsToSearch() : juce::FileSearchPath();
+        juce::FileSearchPath extra(props.getUserSettings()->getValue("extraVst3Paths"));
+        for (int i = 0; i < extra.getNumPaths(); ++i) p.add(extra.getRawString(i));
+        p.removeRedundantPaths();
+        p.removeNonExistentPaths();
+        return p;
+    }
+
+    void addFolder() {
+        chooser = std::make_unique<juce::FileChooser>("Add a VST3 folder", juce::File("C:\\Program Files\\Common Files\\VST3"));
+        chooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectDirectories, [this](const juce::FileChooser& fc) {
+            auto d = fc.getResult();
+            if (!d.isDirectory()) return;
+            juce::FileSearchPath extra(props.getUserSettings()->getValue("extraVst3Paths"));
+            extra.addIfNotAlreadyThere(d);
+            props.getUserSettings()->setValue("extraVst3Paths", extra.toString());
+            props.saveIfNeeded();
+            startScan(false);
+        });
+    }
+
+    void startScan(bool everything) {
+        if (scanPool) return;
+        auto* fmt = vst3Format();
+        if (!fmt) return;
+        scanStop = false;
+        scanFound = 0;
+        const int before = knownPlugins.getNumTypes();
+        scanBefore = before;
+        scanEverything = everything;
+        scanner = std::make_unique<juce::PluginDirectoryScanner>(knownPlugins, *fmt, scanPath(), true,
+                                                                 appDir().getChildFile("scan-crash-guard.txt"), true);
+        scanTotal = fmt->searchPathsForPlugins(scanPath(), true, true).size();
+        const int threads = juce::jlimit(2, 8, juce::SystemStats::getNumCpus());
+        scanPool = std::make_unique<juce::ThreadPool>(juce::ThreadPoolOptions{}.withNumberOfThreads(threads));
+        scanJobsLeft = threads;
+        for (int i = 0; i < threads; ++i)
+            scanPool->addJob([this] {
+                juce::String name;
+                while (!scanStop.load()) {
+                    { const juce::ScopedLock sl(scanNameLock); scanCurrent = scanner->getNextPluginFileThatWillBeScanned(); }
+                    if (!scanner->scanNextFile(!scanEverything, name)) break;
+                }
+                if (--scanJobsLeft == 0) juce::MessageManager::callAsync([this] { finishScan(); });
+            });
+        cancelBtn.setVisible(true);
+        resized();
+        startTimerHz(8);
+    }
+
+    void finishScan() {
+        if (!scanPool) return;
+        scanPool.reset();
+        const auto failed = scanner->getFailedFiles();
+        scanner.reset();
+        cancelBtn.setVisible(false);
+        resized();
+        startTimerHz(2);
+        juce::String msg;
+        msg << (scanStop ? "Scan cancelled. " : "Scan finished. ") << knownPlugins.getNumTypes() << " plugins known ("
+            << juce::jmax(0, knownPlugins.getNumTypes() - scanBefore) << " new).";
+        if (!failed.isEmpty()) msg << "  " << failed.size() << " couldn't be loaded (see Manage plugin list).";
+        scanResult = msg;
+        if (quitAfterScan) {
+            std::printf("%s\n", msg.toRawUTF8());
+            for (auto& t : knownPlugins.getTypes()) std::printf("  %s | %s\n", t.manufacturerName.toRawUTF8(), t.name.toRawUTF8());
+            std::fflush(stdout);
+            juce::JUCEApplication::getInstance()->systemRequestedQuit();
+        }
+        scanResultUntil = juce::Time::getMillisecondCounterHiRes() + 15000;
+    }
+
     // ---- dialogs
     void showAudioSettings() {
         auto* sel = new juce::AudioDeviceSelectorComponent(deviceManager, 0, 256, 0, 256, false, false, true, false);
@@ -544,6 +644,7 @@ private:
 
     void showPluginList() {
         auto* list = new juce::PluginListComponent(formats, knownPlugins, appDir().getChildFile("scan-crash-guard.txt"), props.getUserSettings(), true);
+        list->setNumberOfThreadsForScanning(juce::jlimit(2, 8, juce::SystemStats::getNumCpus()));
         list->setSize(720, 520);
         juce::DialogWindow::LaunchOptions o;
         o.content.setOwned(list);
@@ -564,6 +665,15 @@ private:
     }
 
     void timerCallback() override {
+        if (scanPool && scanner) {
+            juce::String cur;
+            { const juce::ScopedLock sl(scanNameLock); cur = scanCurrent; }
+            const int pct = juce::roundToInt(scanner->getProgress() * 100.f);
+            status.setText("Scanning VST3 " + juce::String(pct) + "% of " + juce::String(scanTotal) + " files  |  "
+                           + juce::String(knownPlugins.getNumTypes() - scanBefore) + " new  |  " + cur, juce::dontSendNotification);
+            return;
+        }
+        if (juce::Time::getMillisecondCounterHiRes() < scanResultUntil) { status.setText(scanResult, juce::dontSendNotification); return; }
         juce::String s;
         if (auto* d = deviceManager.getCurrentAudioDevice())
             s << d->getTypeName() << ": " << d->getName() << "  |  " << juce::String(d->getCurrentSampleRate() / 1000.0, 1) << " kHz, "
@@ -581,17 +691,33 @@ private:
     juce::AudioProcessorPlayer player;
     juce::Viewport viewport;
     std::unique_ptr<Canvas> canvas;
-    juce::TextButton audioBtn{"Audio settings"}, scanBtn{"Scan plugins"}, addBtn{"Add node"}, saveBtn{"Save..."}, loadBtn{"Open..."};
+    juce::TextButton audioBtn{"Audio settings"}, scanBtn{"Plugins..."}, addBtn{"Add node"}, saveBtn{"Save..."}, loadBtn{"Open..."};
     juce::Label status;
+    juce::TextButton cancelBtn{"Cancel"};
+    std::unique_ptr<juce::PluginDirectoryScanner> scanner;
+    std::unique_ptr<juce::ThreadPool> scanPool;
+    std::atomic<bool> scanStop{false};
+    std::atomic<int> scanJobsLeft{0}, scanFound{0};
+    bool scanEverything = false;
+    int scanBefore = 0, scanTotal = 0;
+    juce::CriticalSection scanNameLock;
+    juce::String scanCurrent, scanResult;
+    double scanResultUntil = 0;
+public:
+    bool quitAfterScan = false;
+    void scanAndQuit() { quitAfterScan = true; startScan(true); }
+private:
     juce::OwnedArray<PluginWindow> windows;
     std::unique_ptr<juce::FileChooser> chooser;
 };
 
 class Window : public juce::DocumentWindow {
 public:
-    Window() : DocumentWindow("REA Plugin Hub", col::bg, DocumentWindow::allButtons) {
+    explicit Window(bool scanTest) : DocumentWindow("REA Plugin Hub", col::bg, DocumentWindow::allButtons) {
         setUsingNativeTitleBar(true);
-        setContentOwned(new Main(), true);
+        auto* m = new Main();
+        setContentOwned(m, true);
+        if (scanTest) juce::MessageManager::callAsync([m] { m->scanAndQuit(); });
         setResizable(true, false);
         centreWithSize(getWidth(), getHeight());
         setVisible(true);
@@ -604,9 +730,9 @@ public:
     const juce::String getApplicationName() override { return "REA Plugin Hub"; }
     const juce::String getApplicationVersion() override { return "1.0.0"; }
     bool moreThanOneInstanceAllowed() override { return false; }
-    void initialise(const juce::String&) override {
+    void initialise(const juce::String& cmd) override {
         juce::LookAndFeel::getDefaultLookAndFeel().setColour(juce::ResizableWindow::backgroundColourId, col::bg);
-        window = std::make_unique<Window>();
+        window = std::make_unique<Window>(cmd.contains("--scan-and-quit"));
     }
     void shutdown() override { window.reset(); }
     void systemRequestedQuit() override { quit(); }
