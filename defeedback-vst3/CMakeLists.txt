@@ -59,6 +59,18 @@ if(DFB_BUILD_PLUGIN)
     juce::juce_audio_utils juce::juce_dsp
     PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_lto_flags juce::juce_recommended_warning_flags)
 
+  # REA Plugin Hub: standalone VST3 host with De-Feedback AI built in
+  juce_add_gui_app(REAPluginHub PRODUCT_NAME "REA Plugin Hub" COMPANY_NAME "REA Apps" BUNDLE_ID com.reaapps.pluginhub)
+  target_sources(REAPluginHub PRIVATE host/HostMain.cpp source/PluginProcessor.cpp source/PluginEditor.cpp)
+  target_include_directories(REAPluginHub PRIVATE core)
+  target_compile_definitions(REAPluginHub PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_PLUGINHOST_VST3=1
+    JUCE_APPLICATION_NAME_STRING="REA Plugin Hub" JUCE_APPLICATION_VERSION_STRING="1.0.0")
+  if(WIN32 AND DEFINED DFB_ASIO_SDK)
+    target_compile_definitions(REAPluginHub PRIVATE JUCE_ASIO=1)
+    target_include_directories(REAPluginHub PRIVATE "${DFB_ASIO_SDK}/common")
+  endif()
+  target_link_libraries(REAPluginHub PRIVATE juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+
   # UI snapshot tool (renders the editor to a PNG without a host)
   juce_add_console_app(dfb_snapshot PRODUCT_NAME "dfb_snapshot")
   target_sources(dfb_snapshot PRIVATE tools/snapshot.cpp source/PluginProcessor.cpp source/PluginEditor.cpp)

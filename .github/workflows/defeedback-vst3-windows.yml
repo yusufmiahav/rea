@@ -27,7 +27,7 @@ jobs:
         shell: pwsh
         run: cmake -B build -A x64 "-DDFB_ASIO_SDK=$($env:RUNNER_TEMP -replace '\\','/')/asio/ASIOSDK"
       - name: Build plugin, standalone, tests and tools
-        run: cmake --build build --config Release --parallel --target DeFeedbackAI_VST3 DeFeedbackAI_Standalone dfb_tests dfb_sim dfb_snapshot
+        run: cmake --build build --config Release --parallel --target DeFeedbackAI_VST3 DeFeedbackAI_Standalone REAPluginHub dfb_tests dfb_sim dfb_snapshot
       - name: Core self-tests
         run: build\Release\dfb_tests.exe
       - name: Closed-loop evaluation (simulated rooms)
@@ -47,6 +47,8 @@ jobs:
           Copy-Item -Recurse $vst.FullName "$out\"
           $sa = Get-ChildItem -Recurse build -Filter "De-Feedback AI.exe" | Where-Object { $_.FullName -match "Standalone" } | Select-Object -First 1
           Copy-Item $sa.FullName "$out\De-Feedback AI (Standalone).exe"
+          $hub = Get-ChildItem -Recurse build -Filter "REA Plugin Hub.exe" | Select-Object -First 1
+          Copy-Item $hub.FullName "$out\REA Plugin Hub.exe"
           Copy-Item README.md "$out\README.md"
           New-Item -ItemType Directory -Force "$out\demo" | Out-Null
           build\Release\dfb_sim.exe demo "$out\demo" 7

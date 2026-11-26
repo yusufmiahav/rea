@@ -28,6 +28,16 @@ The IN and OUT meters show the channel coming from the desk (peak, RMS and peak 
 - **In a DAW or plugin host** (Reaper, Gig Performer, Cantabile and so on): pick the desk's USB audio device. Put the vocal channel's USB/direct-out send on a track, insert De-Feedback AI, and route the track back to the desk on a USB return channel.
 - **Without a DAW:** run `De-Feedback AI (Standalone).exe`. Open *Options > Audio/MIDI Settings*, set the audio device type to **ASIO**, choose the Qu (or DM7) ASIO driver, and tick the input and output channels you want. ASIO shows all of the desk's USB channels; Windows Audio/DirectSound usually only shows the main pair.
 
+## REA Plugin Hub (plugin host)
+`REA Plugin Hub.exe` is a small VST3 host built around De-Feedback AI.
+- **Audio settings:** choose **ASIO** and the Qu-16/DM7 driver. Every enabled USB channel becomes a pin on the DESK IN / DESK OUT nodes, named after the driver's channel names.
+- **Scan plugins:** go to *Options > Scan for new or updated VST3 plug-ins*. The list is remembered.
+- **Right-click the canvas** to add De-Feedback AI (built in) or any scanned VST3, such as another de-feedback plugin, as a node.
+- **Wiring:** drag from an output pin (right side) to an input pin (left side) to connect. Right-click a wire to delete it, or a pin to disconnect it.
+- **Node windows:** double-click a node to open its window. Right-click for Bypass, Disconnect all or Delete.
+- **Sessions:** the routing, node positions and every plugin's settings are saved on exit and restored on start. Use Save/Open for named setups (`.reahub`).
+- **Status line:** the top bar shows the device, sample rate, buffer size, CPU and a dropout counter. If the dropout counter climbs, raise the ASIO buffer.
+
 ## Install
 Copy the `De-Feedback AI.vst3` folder to `C:\Program Files\Common Files\VST3\`, then rescan plugins in your host. The build is unsigned, so Windows SmartScreen may warn on the standalone exe. Choose "More info", then "Run anyway".
 
