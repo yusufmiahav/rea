@@ -90,6 +90,112 @@ class Tooltip:
             self.win = None
 
 
+def _db_text(db):
+    return "-inf" if db is None or db <= -59.5 else f"{db:+.1f}"
+
+
+class Strip:
+    """One channel strip on the Mixer page: name, Sel, mute (or send on/off), pan, fader and level."""
+    GREY, RED, GREEN, BLUE = "#3a3a3a", "#c42b1c", "#2d8a4e", "#2e6fd8"
+    LIGHT = {"#d4ac0d", "#d0d0d0", "#3fa7d6", "#16a2b8", "#e67e22"}
+
+    def __init__(self, app, parent, master=False):
+        self.app, self.master, self.target, self.loading, self.muted = app, master, None, False, False
+        f = self.frame = ttk.Frame(parent, padding=(2, 2))
+        self.name = tk.Label(f, text="", width=7, font=("Segoe UI Semibold", 8), bg=self.GREY, fg="#ffffff", pady=3)
+        self.name.pack(fill="x")
+        self.sel = tk.Button(f, text="Sel", relief="flat", bd=0, font=("Segoe UI", 8), bg=self.GREY, fg="#ffffff",
+                             activebackground=self.BLUE, activeforeground="#ffffff",
+                             command=lambda: self.target and app.strip_select(self.target))
+        self.sel.pack(fill="x", pady=(2, 0))
+        self.btn = tk.Button(f, text="MUTE", relief="flat", bd=0, font=("Segoe UI Semibold", 8), bg=self.GREY,
+                             fg="#ffffff", activebackground=self.RED, activeforeground="#ffffff",
+                             command=lambda: app.strip_button(self))
+        self.btn.pack(fill="x", pady=(2, 0))
+        self.pan_var = tk.DoubleVar(value=0.0)
+        self.pan = ttk.Scale(f, from_=-1, to=1, variable=self.pan_var, length=46,
+                             command=lambda e: None if self.loading else app.strip_pan(self, self.pan_var.get()))
+        self.pan.pack(fill="x", pady=(4, 0))
+        self.pan.bind("<Double-Button-1>", lambda e: (self.pan_var.set(0.0), app.strip_pan(self, 0.0)))
+        self.fader_var = tk.DoubleVar(value=-60.0)
+        self.fader = ttk.Scale(f, from_=10, to=-60, orient="vertical", variable=self.fader_var,
+                               command=lambda e: self._moved())
+        self.fader.pack(fill="y", expand=True, pady=(4, 0))
+        self.fader.bind("<Double-Button-1>", lambda e: (self.fader_var.set(0.0), self._moved()))
+        self.value = ttk.Label(f, text="", anchor="center", font=("Segoe UI", 8))
+        self.value.pack(fill="x")
+        self.num = ttk.Label(f, text="", anchor="center", style="Muted.TLabel", font=("Segoe UI", 8))
+        self.num.pack(fill="x")
+        tips = (
+            (self.sel, "Select: open this channel in the editor above."),
+            (self.btn, "Mute. With a mix picked under 'Faders show', this turns the send to that mix on or off."),
+            (self.pan, "Pan. Double-click to centre."),
+            (self.fader, "Fader (bottom is -inf, top +10 dB). With a mix picked under 'Faders show', this is the "
+                         "send level to that mix. Double-click for 0 dB."),
+        )
+        for w, text in tips:
+            app._tip(w, text)
+
+    def _moved(self):
+        if self.loading:
+            return
+        db = self.fader_var.get()
+        self.value.configure(text=_db_text(db))
+        self.app.strip_fader(self, db)
+
+    def bind(self, target, index, short=None):
+        self.target = target
+        short = short or target
+        self.num.configure(text=short if not self.master else f"{short}\nmaster")
+        self.loading = True
+        try:
+            self.fader_var.set(-60.0)
+            self.pan_var.set(0.0)
+        finally:
+            self.loading = False
+        self.muted = False
+        self.value.configure(text="")
+
+    def refresh(self, c, bus, selected, busy):
+        t = self.target
+        label, colour = c.label(t), c.colour(t)
+        self.name.configure(text=str(label)[:10], bg=colour or self.GREY,
+                            fg="#111111" if colour in self.LIGHT else "#ffffff")
+        self.sel.configure(bg=self.BLUE if t == selected else self.GREY)
+        caps = c.caps(t)
+        db = None
+        if bus:
+            can = "sends" in caps
+            st = c.send_state(t, bus) if can else None
+            on = bool(st and st[0])
+            self.btn.configure(text="ON" if on else "OFF", bg=self.GREEN if on else self.GREY,
+                               state="normal" if can else "disabled")
+            db = st[1] if st else (None if can else -90.0)
+            self.pan.state(["disabled"])
+            self.fader.state(["!disabled"] if can else ["disabled"])
+        else:
+            st = c.state(t)
+            if "mute" in st:
+                self.muted = st["mute"]
+            self.btn.configure(text="MUTE", bg=self.RED if self.muted else self.GREY, state="normal")
+            db = st.get("fader")
+            self.pan.state(["!disabled"] if "pan" in caps else ["disabled"])
+            self.fader.state(["!disabled"])
+            if "pan" in st and not busy:
+                self.loading = True
+                try:
+                    self.pan_var.set(max(-1.0, min(1.0, st["pan"])))
+                finally:
+                    self.loading = False
+        if db is not None and not busy:
+            self.loading = True
+            try:
+                self.fader_var.set(max(-60.0, min(10.0, db)))
+            finally:
+                self.loading = False
+            self.value.configure(text=_db_text(db))
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -152,7 +258,7 @@ class App:
         head = ttk.Frame(root, padding=(16, 12, 16, 4))
         head.pack(fill="x")
         ttk.Label(head, text="Mixer Tools", style="Title.TLabel").pack(side="left")
-        ttk.Label(head, text="   feedback control for Qu-16 and DM7", style="Sub.TLabel").pack(side="left", pady=(6, 0))
+        ttk.Label(head, text="   feedback control and mixing for Allen & Heath and Yamaha desks", style="Sub.TLabel").pack(side="left", pady=(6, 0))
         self.theme_btn = T(ttk.Button(head, text="Light mode", command=self.toggle_theme),
                            "Switch between the dark and light look.")
         self.theme_btn.pack(side="right")
@@ -175,7 +281,7 @@ class App:
         routetab = ttk.Frame(nb, padding=8)
         nb.add(routetab, text="  Qu routing  ")
         ctltab = ttk.Frame(nb, padding=8)
-        nb.add(ctltab, text="  Desk control  ")
+        nb.add(ctltab, text="  Mixer  ")
         nb.add(tools, text="  Desk tools  ")
         self._build_tools(tools)
 
@@ -469,35 +575,98 @@ class App:
     # ------------------------------------------------------- desk control
     def _build_control(self, tab):
         T = self._tip
-        self.ctl = None            # QuControl / Dm7Control
+        from feedback import mixer as mx
+        self.mx = mx
+        self.ctltab = tab
+        self.ctl = None            # mixer controller after Connect (QuMixer, SqMixer, AhTcpMixer, RcpMixer)
         self.ctl_owned = None      # a desk connection this page opened itself
+        self.ctl_dry = {}          # model -> dry-run controller, so the page works before connecting
         self.ctl_pending = {}
         self.ctl_loading = False
+        self.ctl_touch = {}        # target -> when the user last moved its strip (polling leaves it alone)
+        self.strips = []
+        self.layers = {}
+        self.layer_var = tk.StringVar(value="")
+        self.bus_var = tk.StringVar(value="")   # "" = faders show the main mix, else this bus's sends
+
+        # Connection bar ---------------------------------------------------
         bar = ttk.Frame(tab)
-        bar.pack(fill="x", pady=(0, 8))
-        ttk.Label(bar, text="Channel").pack(side="left")
-        self.ctl_target = tk.StringVar(value="Ip1")
-        self.ctl_box = T(ttk.Combobox(bar, textvariable=self.ctl_target, state="readonly", width=12),
-                         "The desk channel or mix to control. Qu: Ip1-16, ST1-3, Mix1-4, Mix5-6..9-10, LR.\n"
-                         "DM7: InCh:0.. and Mix:0.. (0-based).")
-        self.ctl_box.pack(side="left", padx=(8, 12))
-        self.ctl_box.bind("<<ComboboxSelected>>", lambda e: self._ctl_select())
-        T(ttk.Button(bar, text="Connect", command=self.ctl_connect),
-          "Connect to the desk chosen on the Feedback tab (IP and Write to the desk).\n"
-          "If the suppressor is running, its connection is shared.").pack(side="left")
-        T(ttk.Button(bar, text="Read from desk", command=self.ctl_read),
-          "Ask the desk for its current settings and move the controls to match (Qu only).").pack(side="left", padx=6)
-        self.ctl_status = ttk.Label(bar, style="Muted.TLabel", text="Not connected. Changes are only shown in the log until you connect.")
+        bar.pack(fill="x", pady=(0, 4))
+        ttk.Label(bar, text="Desk").pack(side="left")
+        self.model_var = tk.StringVar(value="Allen & Heath Qu-16")
+        T(ttk.Combobox(bar, textvariable=self.model_var, values=list(mx.MODELS), state="readonly", width=30),
+          "Which desk this page talks to.\nAllen & Heath: Qu-16/24/32/Pac/SB, Qu-5/6/7, SQ-5/6/7, dLive, Avantis.\n"
+          "Yamaha: DM7, DM7 Compact, DM3, QL1/QL5, CL1/CL3/CL5.").pack(side="left", padx=(6, 10))
+        ttk.Label(bar, text="IP").pack(side="left")
+        self.mixip_var = tk.StringVar()
+        T(ttk.Entry(bar, textvariable=self.mixip_var, width=15),
+          "The desk's IP address. Left empty, the IP on the Feedback tab is used.\n"
+          "Yamaha: SETUP > NETWORK > For Mixer Control.").pack(side="left", padx=(6, 10))
+        ttk.Label(bar, text="MIDI ch").pack(side="left")
+        self.mixmidi_var = tk.IntVar(value=1)
+        T(ttk.Spinbox(bar, from_=1, to=16, textvariable=self.mixmidi_var, width=4),
+          "Allen & Heath only: the desk's MIDI channel (SQ/Qu: Setup > Control > MIDI; dLive/Avantis: the base channel N).\n"
+          "The Qu-16/24/32 reports its own channel when you connect.").pack(side="left", padx=(6, 10))
+        ttk.Label(bar, text="Fader law").pack(side="left")
+        self.taper_var = tk.StringVar(value="linear")
+        T(ttk.Combobox(bar, textvariable=self.taper_var, values=("linear", "audio"), state="readonly", width=7),
+          "SQ and Qu-5/6/7 only: match the desk's MIDI Fader Law setting (Linear Taper or Audio Taper).").pack(
+            side="left", padx=(6, 10))
+        bar2 = ttk.Frame(tab)
+        bar2.pack(fill="x", pady=(0, 4))
+        T(ttk.Checkbutton(bar2, text="Live", variable=self.apply_var, style="Switch.TCheckbutton"),
+          "On: Connect opens a real connection and every change goes to the desk.\n"
+          "Off: dry run, the log shows what would be sent. (Same switch as 'Write to the desk'.)").pack(side="left")
+        T(ttk.Button(bar2, text="Connect", style="Accent.TButton", command=self.ctl_connect),
+          "Connect to the desk. On a Qu, a running suppressor's connection is shared (the Qu takes one client).").pack(
+            side="left", padx=(10, 4))
+        T(ttk.Button(bar2, text="Read from desk", command=self.ctl_read),
+          "Ask the desk for names, faders, mutes and sends, and move the strips to match.").pack(side="left")
+        self.ctl_status = ttk.Label(bar2, style="Muted.TLabel", text="Not connected. Dry run: changes only show in the log.")
         self.ctl_status.pack(side="left", padx=12)
 
-        body = ttk.Frame(tab)
+        pw = ttk.Panedwindow(tab, orient="vertical")
+        pw.pack(fill="both", expand=True)
+        edit = ttk.Frame(pw)
+        mixer = ttk.Frame(pw)
+        pw.add(edit, weight=2)
+        pw.add(mixer, weight=3)
+        self._build_channel_editor(edit)
+        self._build_strips(mixer)
+        self.ctl_pw, self.ctl_edit = pw, edit
+        tab.bind("<Map>", lambda e: self._ctl_sash(), add="+")
+
+        log_frame = ttk.Frame(tab)
+        log_frame.pack(fill="x", pady=(4, 0))
+        self.ctl_log = tk.Text(log_frame, height=2, wrap="none", font=("Cascadia Mono", 9), state="disabled",
+                               relief="flat", borderwidth=0, padx=8, pady=4)
+        self.ctl_log.pack(fill="x")
+        T(self.ctl_log, "Every message sent to the desk from this page.")
+        self.model_var.trace_add("write", lambda *a: self._model_changed())
+        self._model_changed()
+        self.root.after(400, self._strips_tick)
+
+    def _build_channel_editor(self, edit):
+        T = self._tip
+        head = ttk.Frame(edit)
+        head.pack(fill="x", pady=(2, 4))
+        ttk.Label(head, text="Selected channel").pack(side="left")
+        self.ctl_target = tk.StringVar(value="Ip1")
+        self.ctl_box = T(ttk.Combobox(head, textvariable=self.ctl_target, state="readonly", width=12),
+                         "The channel the editor below works on. Press Sel on a strip to pick it.")
+        self.ctl_box.pack(side="left", padx=(8, 12))
+        self.ctl_box.bind("<<ComboboxSelected>>", lambda e: self._ctl_select())
+        self.ctl_sel_name = ttk.Label(head, text="", font=("Segoe UI Semibold", 11))
+        self.ctl_sel_name.pack(side="left")
+
+        body = ttk.Frame(edit)
         body.pack(fill="both", expand=True)
-        for i, wt in enumerate((1, 3, 3)):
+        for i, wt in enumerate((2, 3, 3)):
             body.columnconfigure(i, weight=wt, uniform="ctl")
         body.rowconfigure(0, weight=1)
         v = self.ctlv = {}
 
-        # Strip: fader, mute, pan, preamp
+        # Channel: mute, L+R, fader, pan, preamp
         c1, strip = self._card(body, "Channel")
         c1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         v["mute"] = tk.BooleanVar(value=False)
@@ -508,39 +677,38 @@ class App:
         v["lr"] = tk.BooleanVar(value=True)
         T(ttk.Checkbutton(strip, text="On L+R", variable=v["lr"], style="Switch.TCheckbutton",
                           command=lambda: self._ctl("lr", lambda c, t: c.lr_assign(t, v["lr"].get()))),
-          "Whether this channel goes to the main L+R mix.").pack(anchor="w", pady=(4, 8))
+          "Whether this channel goes to the main L+R mix.").pack(anchor="w", pady=(2, 4))
         frow = ttk.Frame(strip)
-        frow.pack(fill="both", expand=True)
+        frow.pack(fill="x")
         v["fader"] = tk.DoubleVar(value=0.0)
-        T(ttk.Scale(frow, from_=10, to=-60, orient="vertical", variable=v["fader"],
+        T(ttk.Scale(frow, from_=-60, to=10, variable=v["fader"],
                     command=lambda e: self._ctl("fader", lambda c, t: c.fader(t, self._fader_db()))),
-          "Channel fader. Bottom is -inf (off), 0 dB is unity, top is +10 dB.").pack(side="left", fill="y", expand=True)
+          "Channel fader. Left is -inf (off), 0 dB is unity, right is +10 dB.").pack(side="left", fill="x", expand=True)
         self.ctl_fader_lbl = ttk.Label(frow, text="0.0 dB", width=8)
-        self.ctl_fader_lbl.pack(side="left", padx=6)
-        T(ttk.Button(strip, text="0 dB", command=lambda: (v["fader"].set(0.0), self._ctl("fader", lambda c, t: c.fader(t, 0.0)))),
-          "Set the fader to unity (0 dB).").pack(fill="x", pady=(6, 0))
-        ttk.Label(strip, text="Pan  L - C - R").pack(anchor="w", pady=(10, 0))
+        self.ctl_fader_lbl.pack(side="left", padx=4)
+        ttk.Label(strip, text="Pan  L - C - R").pack(anchor="w", pady=(4, 0))
         v["pan"] = tk.DoubleVar(value=0.0)
         T(ttk.Scale(strip, from_=-1, to=1, variable=v["pan"],
                     command=lambda e: self._ctl("pan", lambda c, t: c.pan(t, v["pan"].get()))),
-          "Pan to L+R. Double-click to centre.").pack(fill="x")
+          "Pan to L+R.").pack(fill="x")
         self.ctl_in = ttk.Frame(strip)
-        self.ctl_in.pack(fill="x", pady=(10, 0))
+        self.ctl_in.pack(fill="x", pady=(6, 0))
         ttk.Label(self.ctl_in, text="Preamp gain").pack(anchor="w")
         v["gain"] = tk.DoubleVar(value=20.0)
         T(ttk.Scale(self.ctl_in, from_=-5, to=60, variable=v["gain"],
                     command=lambda e: self._ctl("gain", lambda c, t: c.gain(t, v["gain"].get()))),
-          "Mic preamp gain on the desk's rear-panel input (-5 to +60 dB).").pack(fill="x")
+          "Mic preamp gain (-5 to +60 dB).").pack(fill="x")
         self.ctl_gain_lbl = ttk.Label(self.ctl_in, text="", style="Muted.TLabel")
         self.ctl_gain_lbl.pack(anchor="w")
         v["phantom"] = tk.BooleanVar(value=False)
         T(ttk.Checkbutton(self.ctl_in, text="48V phantom", variable=v["phantom"], style="Switch.TCheckbutton",
                           command=self._ctl_phantom),
-          "Phantom power for condenser mics. Mute the channel first: switching 48V makes a loud pop.").pack(anchor="w", pady=(6, 0))
+          "Phantom power for condenser mics. Mute the channel first: switching 48V makes a loud pop.").pack(anchor="w", pady=(4, 0))
 
         # EQ: HPF + 4-band PEQ
         c2, eq = self._card(body, "EQ")
         c2.grid(row=0, column=1, sticky="nsew", padx=6)
+        self.ctl_eq = eq
         hrow = ttk.Frame(eq)
         hrow.pack(fill="x")
         v["hpf_in"] = tk.BooleanVar(value=False)
@@ -558,18 +726,18 @@ class App:
         v["peq_in"] = tk.BooleanVar(value=True)
         T(ttk.Checkbutton(eq, text="PEQ in", variable=v["peq_in"], style="Switch.TCheckbutton",
                           command=lambda: self._ctl("peq_in", lambda c, t: c.peq_in(t, v["peq_in"].get()))),
-          "Switch the 4-band parametric EQ in or out.").pack(anchor="w", pady=(10, 4))
+          "Switch the 4-band parametric EQ in or out.").pack(anchor="w", pady=(6, 2))
         grid = ttk.Frame(eq)
         grid.pack(fill="both", expand=True)
-        for col, head in enumerate(("", "Gain", "Freq", "Width", "")):
-            ttk.Label(grid, text=head, style="Muted.TLabel").grid(row=0, column=col, sticky="w")
+        for col, head_txt in enumerate(("", "Gain", "Freq", "Width", "")):
+            ttk.Label(grid, text=head_txt, style="Muted.TLabel").grid(row=0, column=col, sticky="w")
         for col in (1, 2, 3):
             grid.columnconfigure(col, weight=1)
         self.ctl_band_lbl = {}
         from feedback import control as ctlmod
         defaults = {1: 100.0, 2: 400.0, 3: 2500.0, 4: 8000.0}
         for b in (1, 2, 3, 4):
-            ttk.Label(grid, text=QU_BAND_NAMES[b]).grid(row=b, column=0, sticky="w", padx=(0, 6), pady=4)
+            ttk.Label(grid, text=QU_BAND_NAMES[b]).grid(row=b, column=0, sticky="w", padx=(0, 6), pady=2)
             v[f"g{b}"] = tk.DoubleVar(value=0.0)
             v[f"f{b}"] = tk.DoubleVar(value=ctlmod.slider_from_freq(defaults[b]))
             v[f"w{b}"] = tk.DoubleVar(value=ctlmod.slider_from_width(1.0))
@@ -581,31 +749,107 @@ class App:
             self.ctl_band_lbl[b] = ttk.Label(grid, text="", width=22)
             self.ctl_band_lbl[b].grid(row=b, column=4, sticky="w")
         T(ttk.Button(eq, text="Flatten EQ", command=self._ctl_flat),
-          "Set all four PEQ gains to 0 dB and, on a mix or LR, every GEQ fader to 0 dB.\n"
-          "Asks first. Frequencies, widths and the HPF are left as they are.").pack(anchor="w", pady=(8, 0))
+          "Set all four PEQ gains to 0 dB and, on a Qu mix or LR, every GEQ fader to 0 dB.\n"
+          "Asks first. Frequencies, widths and the HPF are left as they are.").pack(anchor="w", pady=(4, 0))
+        self.ctl_eq_note = ttk.Label(eq, text="", style="Muted.TLabel")
+        self.ctl_eq_note.pack(anchor="w")
 
-        # Sends
-        c3, sends = self._card(body, "Sends", "For an input: its sends to each mix. For a mix: every input's send into it.")
+        # Sends and group assigns
+        c3, sends_outer = self._card(body, "Sends and groups")
         c3.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
-        self.ctl_sends = sends
+        sc = tk.Canvas(sends_outer, highlightthickness=0, height=150)
+        sb = ttk.Scrollbar(sends_outer, orient="vertical", command=sc.yview)
+        sc.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        sc.pack(side="left", fill="both", expand=True)
+        self.ctl_sends = ttk.Frame(sc)
+        win = sc.create_window(0, 0, window=self.ctl_sends, anchor="nw")
+        self.ctl_sends.bind("<Configure>", lambda e: sc.configure(scrollregion=sc.bbox("all")))
+        sc.bind("<Configure>", lambda e: sc.itemconfigure(win, width=e.width))
+        self._bg_canvases = [sc]
         self.ctl_send_vars = {}
-        log_frame = ttk.Frame(tab)
-        log_frame.pack(fill="x", pady=(6, 0))
-        self.ctl_log = tk.Text(log_frame, height=3, wrap="none", font=("Cascadia Mono", 9), state="disabled",
-                               relief="flat", borderwidth=0, padx=8, pady=4)
-        self.ctl_log.pack(fill="x")
-        T(self.ctl_log, "Every message sent to the desk from this page.")
-        self._ctl_targets()
-        self.desk_var.trace_add("write", lambda *a: self._ctl_targets())
+
+    def _build_strips(self, mixer):
+        mixer.columnconfigure(1, weight=1)
+        mixer.rowconfigure(0, weight=1)
+        self.bank_frame = ttk.Frame(mixer, padding=(0, 4, 6, 0))
+        self.bank_frame.grid(row=0, column=0, sticky="ns")
+        holder = ttk.Frame(mixer)
+        holder.grid(row=0, column=1, sticky="nsew")
+        self.strip_canvas = tk.Canvas(holder, highlightthickness=0, height=290)
+        xs = ttk.Scrollbar(holder, orient="horizontal", command=self.strip_canvas.xview)
+        self.strip_canvas.configure(xscrollcommand=xs.set)
+        self.strip_canvas.pack(fill="both", expand=True)
+        xs.pack(fill="x")
+        self.strip_row = ttk.Frame(self.strip_canvas)
+        self.strip_win = self.strip_canvas.create_window(0, 0, window=self.strip_row, anchor="nw")
+        self.strip_row.bind("<Configure>", lambda e: self.strip_canvas.configure(scrollregion=self.strip_canvas.bbox("all")))
+        self.strip_canvas.bind("<Configure>", lambda e: self.strip_canvas.itemconfigure(self.strip_win, height=e.height))
+        self._bg_canvases.append(self.strip_canvas)
+        mframe = ttk.Frame(mixer, padding=(6, 0, 0, 0))
+        mframe.grid(row=0, column=2, sticky="ns")
+        self.master_strip = Strip(self, mframe, master=True)
+        self.master_strip.frame.pack(fill="y", expand=True)
+        self.bus_frame = ttk.Frame(mixer, padding=(6, 4, 0, 0))
+        self.bus_frame.grid(row=0, column=3, sticky="ns")
+        self._recolour_canvases()
+
+    def _ctl_sash(self):
+        """Give the editor the height it needs once; the rest goes to the strips (drag the divider to change)."""
+        if getattr(self, "_sash_done", False):
+            return
+        self.root.update_idletasks()
+        try:
+            self.ctl_pw.sashpos(0, min(self.ctl_edit.winfo_reqheight(), max(200, self.ctl_pw.winfo_height() - 300)))
+            self._sash_done = True
+        except tk.TclError:
+            pass
+
+    def _toggles(self, parent, items, var, command, tip):
+        """Bank / bus buttons in the same style as the strips (blue = showing)."""
+        btns = []
+        for value, text in items:
+            b = tk.Button(parent, text=text, relief="flat", bd=0, font=("Segoe UI", 9), bg=Strip.GREY, fg="#ffffff",
+                          activebackground=Strip.BLUE, activeforeground="#ffffff", padx=8, pady=3,
+                          command=lambda v=value: (var.set(v), command()))
+            b.value = value
+            self._tip(b, tip(value, text))
+            btns.append(b)
+        return btns
+
+    def _paint_toggles(self):
+        for b in getattr(self, "bank_btns", []):
+            b.configure(bg=Strip.BLUE if b.value == self.layer_var.get() else Strip.GREY)
+        for b in getattr(self, "bus_btns", []):
+            on = b.value == self.bus_var.get()
+            b.configure(bg=(Strip.BLUE if b.value == "" else Strip.GREEN) if on else Strip.GREY)
+
+    def _recolour_canvases(self):
+        try:
+            bg = ttk.Style().lookup("TFrame", "background") or "#1c1c1c"
+        except tk.TclError:
+            bg = "#1c1c1c"
+        for c in getattr(self, "_bg_canvases", []):
+            c.configure(bg=bg)
 
     # helpers -------------------------------------------------------------
     def _ctl_kind(self):
-        kind = DESKS[self.desk_var.get()]
-        return "dm7" if kind == "dm7" else "qu"
+        return self.mx.MODELS[self.model_var.get()]["family"]
+
+    def _model_changed(self):
+        fam = self._ctl_kind()
+        self.bus_var.set("")
+        self.layer_var.set("")
+        live = self.ctl is not None and self.ctl.model == self.model_var.get()
+        if not live:
+            self.ctl_status.configure(text=f"Not connected to the {self.model_var.get()}. Dry run: changes only show in the log.")
+        if fam == "rcp":
+            self.ctlv["gain"].set(20.0)
+        self._build_banks()
+        self._ctl_targets()
 
     def _ctl_targets(self):
-        from feedback import control as ctlmod
-        names = (ctlmod.Dm7Control(None).targets() if self._ctl_kind() == "dm7" else ctlmod.qu_targets(16))
+        names = self._ctl_control().targets()
         if list(self.ctl_box["values"]) != names:
             self.ctl_box["values"] = names
         if self.ctl_target.get() not in names:
@@ -623,61 +867,221 @@ class App:
         self.q.put(("call", show))
 
     def _ctl_control(self):
-        """The controller in use: a live one after Connect, else a dry-run one that only logs."""
-        from feedback import control as ctlmod
-        if self.ctl is not None and self.ctl.name == self._ctl_kind():
+        """The controller in use: the live one after Connect, else a dry-run one that only logs."""
+        model = self.model_var.get()
+        if self.ctl is not None and self.ctl.model == model:
             return self.ctl
-        if self._ctl_kind() == "dm7":
-            return ctlmod.Dm7Control(Dm7Desk(None, "InCh:0", apply=False, log=self._ctl_log_line))
-        return ctlmod.QuControl(QuDesk(None, "Ip1", apply=False, log=self._ctl_log_line))
+        if model not in self.ctl_dry:
+            self.ctl_dry[model] = self.mx.make_mixer(model, None, False, self._ctl_log_line,
+                                                     midi_channel=self.mixmidi_var.get(), taper=self.taper_var.get())[0]
+        c = self.ctl_dry[model]
+        if hasattr(c, "taper"):
+            c.taper = self.taper_var.get()
+        return c
+
+    def _shared_qu(self):
+        """The suppressor's Qu connection, if it's running (the Qu takes only one MIDI client)."""
+        if self.desk is not None and isinstance(self.desk, QuDesk):
+            import copy
+            v = copy.copy(self.desk)
+            v.__class__, v._owner = QuDesk, False
+            v.parent = getattr(self.desk, "parent", None) or self.desk
+            v.log = self._ctl_log_line
+            return v
+        return None
 
     def ctl_connect(self):
-        from feedback import control as ctlmod
-        kind = DESKS[self.desk_var.get()]
+        mx = self.mx
+        model = self.model_var.get()
+        apply = self.apply_var.get()
+        host = self.mixip_var.get().strip() or self.host_var.get().strip()
+        if self.ctl_owned is not None:
+            try:
+                self.ctl_owned.close()
+            except Exception:
+                pass
+            self.ctl_owned = None
+        self.ctl = None
         try:
-            if kind == "dm7":
-                if self.desk is not None and isinstance(self.desk, Dm7Desk):
-                    import copy
-                    d = copy.copy(self.desk)
-                    d._owner, d.log = False, self._ctl_log_line
-                else:
-                    apply = self.apply_var.get()
-                    if apply and not self.host_var.get().strip():
-                        raise ValueError("Enter the desk's IP address on the Feedback tab first.")
-                    d = Dm7Desk(self.host_var.get().strip(), "InCh:0", apply=apply, log=self._ctl_log_line)
-                    if apply:
-                        d.check_link()
-                    self.ctl_owned = d
-                self.ctl = ctlmod.Dm7Control(d)
-            else:
-                d, owned = self._routing_desk()
-                d.log = self._ctl_log_line
-                if owned:
-                    self.ctl_owned = d
-                self.ctl = ctlmod.QuControl(d)
+            shared = self._shared_qu() if mx.MODELS[model]["family"] == "qu" else None
+            if apply and not host and shared is None:
+                raise ValueError("Enter the desk's IP address first.")
+            self.ctl_status.configure(text=f"Connecting to the {model}...")
+            self.root.update_idletasks()
+            ctl, conn = mx.make_mixer(model, host, apply, self._ctl_log_line, shared_qu=shared,
+                                      midi_channel=self.mixmidi_var.get(), taper=self.taper_var.get())
         except Exception as e:
+            self.ctl_status.configure(text=f"Could not connect: {e}")
             messagebox.showerror(APP, f"Could not connect: {e}")
             return
-        live = getattr(self.ctl.desk, "apply", False)
-        self.ctl_status.configure(text=("Connected: changes go to the desk." if live else
-                                        "Dry run: turn on Write to the desk (Feedback tab) to send changes."))
+        self.ctl, self.ctl_owned = ctl, conn
+        box = getattr(getattr(ctl.desk, "parent", ctl.desk), "box", None)
+        if apply:
+            self.ctl_status.configure(text=f"Connected to {box or model}{' at ' + host if host else ''}: changes go to the desk.")
+        else:
+            self.ctl_status.configure(text=f"Dry run on the {model}: turn on Live to send changes.")
+        self.layer_var.set("")
+        self._build_banks()
         self._ctl_targets()
+        if apply:
+            self.ctl_read()
 
-    def ctl_read(self):
-        if self.ctl is None or not getattr(self.ctl.desk, "apply", False) or self.ctl.name != "qu":
-            messagebox.showinfo(APP, "Connect to a Qu with Write to the desk on first. Reading back works on the Qu only.")
+    def _visible_targets(self):
+        c = self._ctl_control()
+        ts = [s.target for s in self.strips if s.target]
+        ts.append(self.bus_var.get() or c.main_target())
+        if self.ctl_target.get() not in ts:
+            ts.append(self.ctl_target.get())
+        return ts
+
+    def ctl_read(self, quiet=False):
+        c = self._ctl_control()
+        if not getattr(c.desk, "apply", False) and not getattr(getattr(c.desk, "parent", None), "apply", False):
+            if not quiet:
+                messagebox.showinfo(APP, "Turn on Live and press Connect first. Reading needs a real connection.")
             return
         self.ctl_status.configure(text="Reading from the desk...")
+        targets, bus = self._visible_targets(), self.bus_var.get() or None
 
         def work():
             try:
-                getattr(self.ctl.desk, "parent", self.ctl.desk).check_link()
-                time.sleep(2.5)
-                self.q.put(("call", lambda: (self._ctl_select(), self.ctl_status.configure(text="Read from the desk."))))
+                c.refresh(targets, bus=bus)
+                time.sleep(1.5 if c.name == "qu" else 0.8)
+                self.q.put(("call", lambda: (self._ctl_select(), self._strips_update(force=True),
+                                             self.ctl_status.configure(text="Read from the desk."))))
             except Exception as e:
-                self.q.put(("call", lambda: self.ctl_status.configure(text=f"Read failed: {e}")))
+                msg = f"Read failed: {e}"
+                self.q.put(("call", lambda: self.ctl_status.configure(text=msg)))
         threading.Thread(target=work, daemon=True).start()
 
+    # strips --------------------------------------------------------------
+    def _build_banks(self):
+        c = self._ctl_control()
+        for w in self.bank_frame.winfo_children() + self.bus_frame.winfo_children():
+            w.destroy()
+        layers = c.layers()
+        self.layers = dict(layers)
+        if self.layer_var.get() not in self.layers:
+            self.layer_var.set(layers[0][0])
+        rows = 9
+        ttk.Label(self.bank_frame, text="Banks", style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        self.bank_btns = self._toggles(self.bank_frame, [(n, n) for n, _ in layers], self.layer_var, self._show_layer,
+                                       lambda v, t: "Show this bank of strips.")
+        for i, b in enumerate(self.bank_btns):
+            b.grid(row=1 + i % rows, column=i // rows, sticky="we", pady=1, padx=1)
+        ttk.Label(self.bus_frame, text="Faders show", style="Muted.TLabel").pack(anchor="w")
+        buses = c.buses()
+        self.bus_btns = self._toggles(
+            self.bus_frame, [("", "Main mix")] + buses[:8], self.bus_var, self._show_layer,
+            lambda v, t: ("Faders and mutes are the channels' own (to the main mix)." if not v else
+                          f"Sends on faders: each strip's fader is its send to {t}, the button turns the send\n"
+                          f"on or off, and the master strip is {t}'s own fader."))
+        for b in self.bus_btns:
+            b.pack(fill="x", pady=1)
+        if len(buses) > 8:
+            more = ttk.Combobox(self.bus_frame, values=[b for b, _ in buses[8:]], state="readonly", width=9)
+            more.pack(fill="x", pady=(4, 0))
+            self._tip(more, "More mixes and sends.")
+            more.bind("<<ComboboxSelected>>", lambda e: (self.bus_var.set(more.get()), self._show_layer()))
+        self._show_layer()
+
+    def _show_layer(self):
+        c = self._ctl_control()
+        targets = self.layers.get(self.layer_var.get(), [])
+        while len(self.strips) < len(targets):
+            self.strips.append(Strip(self, self.strip_row))
+        for i, s in enumerate(self.strips):
+            if i < len(targets):
+                s.bind(targets[i], i, c.short(targets[i]))
+                s.frame.pack(side="left", fill="y")
+            else:
+                s.target = None
+                s.frame.pack_forget()
+        bus = self.bus_var.get()
+        self._paint_toggles()
+        self.master_strip.bind(bus or c.main_target(), 0, c.short(bus or c.main_target()))
+        self.strip_canvas.xview_moveto(0)
+        self._strips_update(force=True)
+        if getattr(c, "refresh_on_bank", True) and self.ctl is c and getattr(c.desk, "apply", False):
+            self.ctl_read(quiet=True)
+
+    def _strips_tick(self):
+        try:
+            if self.nb.select() == str(self.ctltab):
+                self._strips_update()
+        finally:
+            self.root.after(400, self._strips_tick)
+
+    def _strips_update(self, force=False):
+        c = self._ctl_control()
+        bus = self.bus_var.get()
+        now = time.time()
+        for s in self.strips + [self.master_strip]:
+            if not s.target:
+                continue
+            try:
+                busy = now - self.ctl_touch.get(s.target, 0) < 1.2 and not force
+                s.refresh(c, None if s.master else (bus or None), self.ctl_target.get(), busy)
+            except Exception as e:
+                self.log(f"[mixer] {s.target}: {type(e).__name__}: {e}")
+
+    def _strip_send(self, key, fn):
+        """Batched like the editor: the newest value goes out 60 ms after the last move."""
+        old = self.ctl_pending.pop(key, None)
+        if old:
+            self.root.after_cancel(old)
+
+        c = self._ctl_control()   # the desk that was showing when the strip moved
+
+        def go():
+            self.ctl_pending.pop(key, None)
+            try:
+                fn(c)
+            except Exception as e:
+                self.log(f"[control] {type(e).__name__}: {e}")
+        self.ctl_pending[key] = self.root.after(60, go)
+
+    def strip_fader(self, strip, db):
+        t, bus = strip.target, (None if strip.master else self.bus_var.get() or None)
+        if not t or strip.loading:
+            return
+        self.ctl_touch[t] = time.time()
+        db = -90.0 if db <= -59.5 else db
+        if bus:
+            self._strip_send(f"send:{t}>{bus}", lambda c: c.send_level(t, bus, db))
+        else:
+            self._strip_send(f"fader:{t}", lambda c: c.fader(t, db))
+
+    def strip_pan(self, strip, pos):
+        t = strip.target
+        if not t or strip.loading:
+            return
+        self.ctl_touch[t] = time.time()
+        self._strip_send(f"pan:{t}", lambda c: c.pan(t, pos))
+
+    def strip_button(self, strip):
+        t, bus = strip.target, (None if strip.master else self.bus_var.get() or None)
+        if not t:
+            return
+        c = self._ctl_control()
+        try:
+            if bus:
+                st = c.send_state(t, bus)
+                c.send_on(t, bus, not (st[0] if st else False))
+            else:
+                c.mute(t, not c.state(t).get("mute", strip.muted))
+        except Exception as e:
+            self.log(f"[control] {type(e).__name__}: {e}")
+        self._strips_update(force=True)
+        if t == self.ctl_target.get():
+            self._ctl_select()
+
+    def strip_select(self, t):
+        self.ctl_target.set(t)
+        self._ctl_select()
+        self._strips_update(force=True)
+
+    # editor --------------------------------------------------------------
     def _fader_db(self):
         db = self.ctlv["fader"].get()
         return -90.0 if db <= -59.5 else db
@@ -719,9 +1123,11 @@ class App:
         for b in (1, 2, 3, 4):
             g, f, w = self._band(b)
             self.ctl_band_lbl[b].configure(text=f"{g:+.1f} dB  {f:,.0f} Hz  {w:.2f} oct")
-        for key, (on, lv, post, lbl) in self.ctl_send_vars.items():
-            d = lv.get()
-            lbl.configure(text="-inf" if d <= -59.5 else f"{d:+.0f}")
+        for key, vals in self.ctl_send_vars.items():
+            if len(vals) == 4:
+                on, lv, post, lbl = vals
+                d = lv.get()
+                lbl.configure(text="-inf" if d <= -59.5 else f"{d:+.0f}")
 
     def _ctl(self, key, fn):
         """Send a change. Slider moves are batched: the newest value goes out 60 ms later."""
@@ -739,41 +1145,55 @@ class App:
                 fn(self._ctl_control(), t)
             except Exception as e:
                 self.log(f"[control] {type(e).__name__}: {e}")
+            self._strips_update(force=True)
         self.ctl_pending[key] = self.root.after(60, go)
+
+    @staticmethod
+    def _set_state(widget, on):
+        for child in [widget] + list(widget.winfo_children()):
+            try:
+                child.state(["!disabled"] if on else ["disabled"])
+            except (tk.TclError, AttributeError):
+                pass
+            if child is not widget and child.winfo_children():
+                App._set_state(child, on)
 
     def _ctl_select(self):
         """Channel changed (or read back): rebuild the sends and load what the desk reported."""
         c = self._ctl_control()
         t = self.ctl_target.get()
-        is_in = c.is_input(t)
-        for w in (self.ctl_in,):
-            for child in w.winfo_children():
-                try:
-                    child.state(["!disabled"] if c.is_mono_input(t) else ["disabled"])
-                except (tk.TclError, AttributeError):
-                    pass
-        for w in (self.ctl_hpf_sw, self.ctl_hpf_scale):
-            w.state(["!disabled"] if is_in else ["disabled"])
-        # Sends
+        caps = c.caps(t)
+        try:
+            self.ctl_sel_name.configure(text=c.label(t) if c.label(t) != t else "")
+        except Exception:
+            self.ctl_sel_name.configure(text="")
+        self._set_state(self.ctl_in, "preamp" in caps)
+        self._set_state(self.ctl_eq, "eq" in caps)
+        if "eq" in caps:
+            for w in (self.ctl_hpf_sw, self.ctl_hpf_scale):
+                w.state(["!disabled"] if "hpf" in caps else ["disabled"])
+        self.ctl_eq_note.configure(text="" if "eq" in caps else
+                                   f"EQ isn't in the {c.model} protocol this app uses: set it on the desk.")
+        # Sends and groups
         for child in self.ctl_sends.winfo_children():
             child.destroy()
         self.ctl_send_vars = {}
         got = c.read(t)
-        if is_in:
-            rows = [(m, t, m) for m in c.mixes()]
+        if "sends" in caps:
+            rows = [(lbl, t, m) for m, lbl in c.buses()]
         elif c.is_mix(t):
             rows = [(src, src, t) for src in c.targets() if c.is_input(src)]
         else:
             rows = []
-            ttk.Label(self.ctl_sends, text="L+R has no sends. Pick an input or a mix.", style="Muted.TLabel").grid(row=0, column=0)
-        cols = 2 if len(rows) > 10 else 1
-        per = (len(rows) + cols - 1) // cols
-        for i, (label, src, mix) in enumerate(rows):
-            r, cbase = i % per, (i // per) * 4
+        if not rows and not c.groups():
+            ttk.Label(self.ctl_sends, text="No sends on this strip. Pick an input or a mix.", style="Muted.TLabel").grid(
+                row=0, column=0, sticky="w")
+        r = 0
+        for label, src, mix in rows:
             on = tk.BooleanVar(value=False)
             lv = tk.DoubleVar(value=-60.0)
             post = tk.BooleanVar(value=True)
-            sv = self.ctl_read_send(src, mix)
+            sv = (got if src == t else c.read(src)).get(f"send:{mix}")
             if sv:
                 on.set(sv[0]); lv.set(max(-60.0, sv[1])); post.set(sv[2])
             send = lambda c2, t2, src=src, mix=mix, on=on, lv=lv, post=post: c2.send(
@@ -781,18 +1201,32 @@ class App:
             key = f"send:{src}>{mix}"
             self._tip(ttk.Checkbutton(self.ctl_sends, text=label, variable=on,
                                       command=lambda k=key, f=send: self._ctl(k, f)),
-                      f"Send {src} to {mix} on or off.").grid(row=r, column=cbase, sticky="w")
+                      f"Send {src} to {mix} on or off.").grid(row=r, column=0, sticky="w")
             self._tip(ttk.Scale(self.ctl_sends, from_=-60, to=10, variable=lv,
                                 command=lambda e, k=key, f=send: self._ctl(k, f)),
-                      f"Send level from {src} to {mix} (left is -inf, 0 dB is unity).").grid(row=r, column=cbase + 1, sticky="we", padx=4)
+                      f"Send level from {src} to {mix} (left is -inf, 0 dB is unity).").grid(row=r, column=1, sticky="we", padx=4)
             lbl = ttk.Label(self.ctl_sends, text="", width=5)
-            lbl.grid(row=r, column=cbase + 2, sticky="w")
+            lbl.grid(row=r, column=2, sticky="w")
             self._tip(ttk.Checkbutton(self.ctl_sends, text="post", variable=post,
                                       command=lambda k=key, f=send: self._ctl(k, f)),
                       "On: post-fader (the channel fader affects the send). Off: pre-fader, for monitor mixes.").grid(
-                row=r, column=cbase + 3, sticky="w", padx=(0, 10))
+                row=r, column=3, sticky="w", padx=(0, 6))
             self.ctl_send_vars[key] = (on, lv, post, lbl)
-            self.ctl_sends.columnconfigure(cbase + 1, weight=1)
+            r += 1
+        self.ctl_sends.columnconfigure(1, weight=1)
+        groups = c.groups() if c.is_input(t) else []
+        if groups:
+            ttk.Label(self.ctl_sends, text="Assign to groups", style="Muted.TLabel").grid(row=r, column=0, columnspan=4,
+                                                                                      sticky="w", pady=(8, 2))
+            r += 1
+            gf = ttk.Frame(self.ctl_sends)
+            gf.grid(row=r, column=0, columnspan=4, sticky="w")
+            for i, g in enumerate(groups):
+                var = tk.BooleanVar(value=bool(got.get(f"group:{g}", False)))
+                self._tip(ttk.Checkbutton(gf, text=c.label(g), variable=var,
+                                          command=lambda g=g, var=var: self._ctl(f"group:{g}", lambda c2, t2: c2.group_assign(t2, g, var.get()))),
+                          f"Route {t} to {g}.").grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 8))
+                self.ctl_send_vars[f"group:{g}"] = (var,)
         # Load the channel's own settings without sending them back to the desk.
         self.ctl_loading = True
         try:
@@ -1263,6 +1697,7 @@ class App:
         except Exception:
             return
         self._apply_text_colours()
+        self._recolour_canvases()
 
     def _apply_text_colours(self):
         try:
@@ -1779,7 +2214,8 @@ class App:
     def _save_settings(self):
         os.makedirs(STATE_DIR, exist_ok=True)
         data = {k: getattr(self, k + "_var").get() for k in
-                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax", "recover", "speed")}
+                ("dev", "chan", "desk", "host", "target", "bands", "midi", "sens", "floor", "hpf", "hpfmax", "recover", "speed",
+                  "model", "mixip", "mixmidi", "taper")}
         data["rows"] = [{k: r[k] for k in ("chan", "target", "bands")} for r in self.rows]
         data["ringout"] = {k: v.get() for k, v in self.ro_vars.items()}
         with open(SETTINGS, "w", encoding="utf-8") as f:
@@ -1798,6 +2234,8 @@ class App:
             for k, v in data.items():
                 if k == "desk" and v not in DESKS:
                     continue  # desk names changed between versions
+                if k == "model" and v not in self.mx.MODELS:
+                    continue
                 if k == "bands" and v.replace(" ", "") in ("1,2",):
                     v = "2,3"  # old default (0-based LM,HM) -> new 1-based numbers
                 getattr(self, k + "_var").set(v)
@@ -1913,7 +2351,32 @@ def smoke_drive(root):
         app.ctl_target.set("Ip2")
         app._ctl_select()
     root.after(1500, try_control)
-    root.after(3500, lambda: app.nb.select(2))  # CI screenshots: feedback tab, then the meters
+
+    def try_mixer():
+        app.nb.select(app.ctltab)
+        app.layer_var.set("ST / FX ret"); app._show_layer()
+        app.layer_var.set("Ch 1-16"); app._show_layer()
+        s = app.strips[0]
+        s.fader_var.set(-10.0); s._moved()
+        app.strip_button(s)                       # mute Ip1
+        app.bus_var.set("Mix2"); app._show_layer()
+        s.fader_var.set(-3.0); s._moved()         # Ip1 send to Mix2
+        app.strip_button(s)                       # send on
+        app.strip_select("Ip3")
+        app.bus_var.set(""); app._show_layer()
+    root.after(2000, try_mixer)
+    models = ["Allen & Heath SQ-5 / SQ-6 / SQ-7", "Allen & Heath dLive", "Yamaha DM7", "Yamaha QL5",
+              "Allen & Heath Qu-5 / Qu-6 / Qu-7", "Allen & Heath Qu-16"]
+
+    def try_model(i):
+        app.model_var.set(models[i])
+        st = app.strips[0]
+        st.fader_var.set(-10.0); st._moved()
+        app.strip_button(st)
+        app.strip_select(app.strips[1].target)
+    for i in range(len(models)):
+        root.after(2400 + 180 * i, lambda i=i: try_model(i))
+    root.after(3600, lambda: app.nb.select(app.ctltab))  # CI screenshots: feedback tab, then the Mixer page
     root.after(7000, app.stop)
     return app
 
@@ -1939,12 +2402,17 @@ def main():
             text = app.log_txt.get("1.0", "end")
             problems = [w for w in ("Started: in 1 -> Ip1, in 2 -> Mix1", "[ring-out] Mix1", "Saved cuts",
                                     "[routing] Dry run: would send Ip3, Ip4 to Mix1",
-                                    "Mix1 fader -5.0 dB", "GEQ flat")
+                                    "Mix1 fader -5.0 dB", "GEQ flat", "[qu dry-run] Ip1 fader -10.0 dB",
+                                    "[qu dry-run] Ip1 send to Mix2 -3.0 dB", "[sq dry-run] Ip1 fader -10.0 dB",
+                                    "[dlive dry-run] Ip1 fader -10.0 dB",
+                                    "[rcp dry-run] set MIXER:Current/InCh/Fader/Level 0 0 -1000")
                         if w not in text]
             if "error:" in text:
                 problems.append("an error was logged")
             if "[analyser]" in text:
                 problems.append("the analyser failed")
+            if "[mixer]" in text:
+                problems.append("the mixer strips failed")
             if "[control]" in text:
                 problems.append("the control page failed")
             if "[meters]" in text:

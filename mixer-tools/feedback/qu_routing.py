@@ -33,6 +33,8 @@ class NrpnParser:
         self.params = {}        # (ch, id, vx) -> va
         self.vx_seen = {}       # id -> set of vx values the desk used
         self.mutes = {}         # channel code -> True when muted (note on messages)
+        self.names = {}         # channel code -> name (SysEx name replies: header, 02, CH, name, F7)
+        self._sx = bytearray()
         self._status = None
         self._data = []
         self._in_sysex = False
@@ -42,10 +44,13 @@ class NrpnParser:
         for b in data:
             if b == 0xF0:
                 self._in_sysex = True
+                self._sx = bytearray([b])
                 continue
             if self._in_sysex:
+                self._sx.append(b)
                 if b == 0xF7:
                     self._in_sysex = False
+                    self._sysex(bytes(self._sx))
                 continue
             if b >= 0xF8 or b == 0xFE:
                 continue                     # real-time / active sensing
@@ -61,6 +66,12 @@ class NrpnParser:
                 elif self._status & 0xF0 == 0x90 and self._data[1] > 0:
                     self.mutes[self._data[0]] = self._data[1] >= 0x40
                 self._data = []              # running status: keep _status
+
+    def _sysex(self, sx):
+        hdr = bytes([0xF0, 0x00, 0x00, 0x1A, 0x50, 0x11, 0x01, 0x00])
+        if sx.startswith(hdr) and len(sx) >= len(hdr) + 4 and sx[len(hdr) + 1] == 0x02:
+            ch = sx[len(hdr) + 2]
+            self.names[ch] = bytes(sx[len(hdr) + 3:-1]).decode("ascii", "replace").strip("\x00 ")
 
     def _cc(self, midi_ch, cc, val):
         cur = self._cur.setdefault(midi_ch, {})

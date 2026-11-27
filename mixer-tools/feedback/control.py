@@ -56,8 +56,17 @@ def qu_targets(n_inputs=16):
         ["Mix1", "Mix2", "Mix3", "Mix4", "Mix5-6", "Mix7-8", "Mix9-10", "LR"]
 
 
+QU_EXTRA_CODES = {**{f"FXRtn{i}": 0x07 + i for i in range(1, 5)},     # FX returns 08-0B
+                  **{f"FX{i}": i - 1 for i in range(1, 5)},           # FX sends 00-03
+                  **{f"DCA{i}": 0x0F + i for i in range(1, 5)},       # DCA 10-13
+                  "Grp1-2": 0x68, "Grp3-4": 0x69, "Grp5-6": 0x6A, "Grp7-8": 0x6B,
+                  "Mtx1-2": 0x6C, "Mtx3-4": 0x6D}
+
+
 def qu_code(target):
     from .qu_routing import MIX_CODES
+    if target in QU_EXTRA_CODES:
+        return QU_EXTRA_CODES[target]
     return MIX_CODES.get(target) or qu_channel_code(target)
 
 

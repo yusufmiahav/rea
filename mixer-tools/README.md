@@ -1,9 +1,12 @@
-# Mixer Tools (Qu-16 and DM7)
+# Mixer Tools (Allen & Heath and Yamaha desks)
 
-`MixerTools.exe` is one Windows app with two tabs:
+`MixerTools.exe` is one Windows app. Its tabs:
 
-- **Feedback suppressor**: pick the audio input and the desk, then press Start. Details below.
-- **Qu-16 / DM7 tools**: the probe tools in `desktools/`. Discover, sync and meters work on the
+- **Feedback suppressor**, **Analyser**, **Meters**, **Ring out** and **Qu routing**: the Qu-16 / DM7
+  feedback tools. Details below.
+- **Mixer**: channel strips for the whole desk, plus an editor for the selected channel. See
+  [The Mixer page](#the-mixer-page).
+- **Desk tools**: the probe tools in `desktools/`. Discover, sync and meters work on the
   Qu-16. Info, dump, watch, get, set and raw work on the DM7. Each run is logged to
   `%USERPROFILE%\MixerTools\logs`.
 
@@ -12,6 +15,44 @@ a command prompt, for example `MixerTools.exe --tool qu16 discover` (output goes
 console only when started from a console build, so in the window build use the tools tab).
 The exe is built by `.github/workflows/mixer-tools-windows.yml`. That workflow runs the unit tests,
 packages the app with PyInstaller and self-tests the result.
+
+## The Mixer page
+
+Pick the desk, type its IP, switch on **Live** and press **Connect**. With Live off, every move is only
+written to the log, so you can try the page without a desk.
+
+- **Banks** (left) choose which strips show: inputs in banks of 16, stereo inputs and FX returns, mixes,
+  groups, matrices, FX sends and DCAs, depending on the desk.
+- Each **strip** has the desk's name and colour (when the desk reports them), **Sel**, **MUTE**, pan,
+  a fader and its level. **Sel** opens that channel in the editor above: EQ, preamp, HPF, sends and
+  group assigns.
+- **Faders show** (right) flips the faders to sends on faders: pick a mix and each fader becomes that
+  channel's send to the mix, the button turns the send on or off, and the master strip becomes the
+  mix's own fader. **Main mix** goes back to the channel faders.
+- **Read from desk** pulls names, faders, mutes and sends. The page also follows changes the desk
+  reports while it's connected (the Yamaha desks report every change; the A&H desks report what they
+  send back).
+
+| Desk | Protocol (all from the public vendor docs) | Port | What works |
+|---|---|---|---|
+| Qu-16, Qu-24, Qu-32, Qu-Pac, Qu-SB | Qu MIDI Protocol V1.9 (NRPN) | TCP 51325 | Faders, mutes, pan, sends to Mix 1-10 and FX 1-4, group assigns (Qu-24/32/Pac/SB), DCAs, names, EQ, preamp, 48V |
+| Qu-5, Qu-6, Qu-7 | Qu-5/6/7 MIDI Protocol Issue 2 (14-bit NRPN) | TCP 51325 | Faders, mutes, pan, sends to Mix 1-12 and FX 1-4, group assigns, DCAs |
+| SQ-5, SQ-6, SQ-7 | SQ MIDI Protocol Issue 5 (14-bit NRPN) | TCP 51325 | Faders, mutes, pan, sends to Aux 1-12 and FX 1-4, group assigns, DCAs |
+| dLive, Avantis | A&H MIDI over TCP | TCP 51325 | Faders, mutes, sends, main assign, names and colours; dLive also group assigns and reading faders/mutes |
+| Yamaha DM7, DM7 Compact, DM3, QL1, QL5, CL1, CL3, CL5 | Yamaha remote control protocol (RCP) | TCP 49280 | Faders, on/mute, pan, sends to mixes, names, colours, HPF and PEQ; DM7 preamp gain. Channel counts are read from the desk |
+
+Things to know:
+
+- **SQ and Qu-5/6/7:** set **MIDI ch** to the desk's MIDI channel and **Fader law** to the desk's MIDI
+  fader law. Sends to FX from groups/FX returns and the Qu-5/6/7 group-to-mix sends use addresses
+  worked out from the SQ table layout, not printed in the docs.
+- **dLive / Avantis:** set **MIDI ch** to the base channel N. The page shows the first 16 groups and auxes
+  (and 8 stereo ones), since a show's bus setup varies. The plain port (51325) needs no password.
+  EQ and preamps aren't in that protocol.
+- **Yamaha:** the IP is SETUP > NETWORK > For Mixer Control. The pre/post value for sends and the HPF
+  frequency units are assumed and worth checking with `--tool dm7 watch`.
+- The Qu takes one MIDI client at a time. If the suppressor is running, the Mixer page shares its
+  connection.
 
 ## Several channels at once
 

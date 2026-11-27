@@ -2,7 +2,7 @@ name: Mixer Tools Windows exe
 
 on:
   push:
-    branches: [claude/project-thread-cs87jc]
+    branches: [claude/project-thread-cs87jc, claude/project-thread-3gz9ma]
     paths: ["mixer-tools/**", ".github/workflows/mixer-tools-windows.yml"]
   workflow_dispatch:
 
@@ -71,7 +71,7 @@ jobs:
           $env:SELFTEST_OUT = "$PWD\smoke3.txt"
           $p = Start-Process -FilePath dist\MixerTools.exe -ArgumentList "--smoke-gui" -PassThru
           Start-Sleep -Seconds 3; Shot "1-feedback"
-          Start-Sleep -Seconds 3; Shot "2-ringout"
+          Start-Sleep -Seconds 3; Shot "2-mixer"
           $p.WaitForExit(30000) | Out-Null
       - uses: actions/upload-artifact@v4
         with:
