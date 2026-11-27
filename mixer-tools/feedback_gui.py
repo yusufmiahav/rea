@@ -1238,6 +1238,8 @@ class App:
             for k in ("mute", "phantom", "peq_in", "hpf_in", "lr"):
                 if k in got:
                     v[k].set(got[k])
+            if "mute" not in got:   # not reported yet: show it the way the strip does, not the last channel's
+                v["mute"].set(bool(c.state(t).get("mute", False)))
             for b in (1, 2, 3, 4):
                 if f"band{b}" in got:
                     g, f, w = got[f"band{b}"]
